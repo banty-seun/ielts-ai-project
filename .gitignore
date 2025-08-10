@@ -1,0 +1,15 @@
+
+node_modules
+dist
+.DS_Store
+server/public
+vite.config.ts.*
+*.tar.gz
+.env
+.env.local
+
+# Replit agent dumps
+attached_assets/
+
+# Replit agent dumps
+attached_assets/

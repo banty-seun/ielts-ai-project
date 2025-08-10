@@ -1,0 +1,2092 @@
+import type { Express, Request, Response } from "express";
+import { createServer, type Server } from "http";
+import { storage } from "./storage";
+import { setupAuth, isAuthenticated } from "./replitAuth";
+import { verifyFirebaseAuth, ensureFirebaseUser } from './firebaseAuth';
+import { generateIELTSPlan, generateListeningStudyPlan } from './openai';
+import { batchInitializeTaskProgress } from './controllers/taskProgressController';
+import { onboardingSchema } from '@shared/schema';
+import { v4 as uuidv4 } from 'uuid';
+import { auth } from './firebaseAdmin';
+
+// Define the extended Request interface with user
+declare global {
+  namespace Express {
+    interface User {
+      claims?: {
+        sub: string;
+        email?: string;
+        username?: string;
+        [key: string]: any;
+      };
+      id?: string;
+      [key: string]: any;
+    }
+  }
+}
+
+// Type declarations for passport methods already exist - 
+// no need to redeclare them here
+
+export async function registerRoutes(app: Express): Promise<Server> {
+  // Auth middleware
+  await setupAuth(app);
+
+  // Firebase Auth routes
+  app.get('/api/firebase/auth/user', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    try {
+      // CRITICAL FIX: Use database ID (not Firebase UID)
+      const userId = req.user.id;
+      
+      if (!userId) {
+        return res.status(400).json({
+          success: false,
+          message: "Unable to determine user ID"
+        });
+      }
+      
+      // Log successful auth using both for debugging
+      console.log(`[Firebase Auth Success] User (DB ID: ${userId}, Firebase UID: ${req.firebaseUser.uid}) authenticated`);
+      
+      const user = await storage.getUser(userId);
+      res.json(user);
+    } catch (error) {
+      console.error("Error fetching Firebase user:", error);
+      res.status(500).json({ message: "Failed to fetch user" });
+    }
+  });
+  
+  // Old Auth routes (for backward compatibility)
+  app.get('/api/auth/user', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      
+      // Log successful auth
+      console.log(`[Auth Success] User ${userId} authenticated`);
+      
+      const user = await storage.getUser(userId);
+      res.json(user);
+    } catch (error) {
+      console.error("Error fetching user:", error);
+      res.status(500).json({ message: "Failed to fetch user" });
+    }
+  });
+  
+  // Check if onboarding is completed and mark it as completed (Firebase Auth version)
+  app.get('/api/firebase/auth/onboarding-status', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    try {
+      // CRITICAL FIX: Use database ID (not Firebase UID)
+      const firebaseUid = req.firebaseUser.uid;
+      
+      // IMPORTANT: req.user is already set by ensureFirebaseUser
+      // This user object has already been found by Firebase UID, email, or username
+      // and should be used instead of doing another lookup
+      const user = req.user;
+      
+      if (!user) {
+        console.error(`[Firebase Auth] User missing in request after ensureFirebaseUser middleware`);
+        return res.status(404).json({ message: "User not found" });
+      }
+      
+      // Get the stable database ID - this is critical for data consistency
+      const databaseId = user.id;
+      
+      console.log(`[Firebase Auth] Onboarding status for user ${databaseId} (Firebase UID: ${firebaseUid}):`, 
+                 user.onboardingCompleted ? "completed" : "incomplete");
+      
+      return res.status(200).json({ 
+        onboardingCompleted: user.onboardingCompleted || false,
+        userId: databaseId, // Use stable database ID
+        firebaseUid: firebaseUid, // Include Firebase UID for debugging
+        source: 'database'
+      });
+    } catch (error) {
+      console.error("[Firebase Auth] Error checking onboarding status:", error);
+      res.status(500).json({ message: "Failed to check onboarding status" });
+    }
+  });
+  
+  // Direct API endpoint for Firebase token verification and onboarding status
+  // This skips middleware chain for diagnostic purposes
+  app.get('/api/debug/firebase/onboarding-status', async (req, res) => {
+    try {
+      console.log('[Debug API] Onboarding status request received');
+      
+      // Get the ID token from Authorization header
+      const authHeader = req.headers.authorization;
+      const token = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : null;
+      
+      console.log('[Debug API] Request headers:', {
+        hasAuth: !!req.headers.authorization,
+        authType: authHeader?.startsWith('Bearer ') ? 'Bearer' : 'Unknown or None',
+        tokenLength: token ? token.length : 0,
+        tokenStart: token ? `${token.substring(0, 10)}...` : 'None'
+      });
+      
+      if (!token) {
+        console.log('[Debug API] No token provided');
+        return res.status(401).json({ 
+          error: true,
+          message: 'No authentication token provided'
+        });
+      }
+      
+      try {
+        // Manually verify the token
+        console.log('[Debug API] Verifying Firebase token');
+        const decodedToken = await auth.verifyIdToken(token);
+        
+        console.log('[Debug API] Token verified successfully:', {
+          uid: decodedToken.uid,
+          email: decodedToken.email || 'not provided',
+          exp: new Date(decodedToken.exp * 1000).toISOString()
+        });
+        
+        // Get user from database by Firebase UID
+        const firebaseUid = decodedToken.uid;
+        const user = await storage.getUserByFirebaseUid(firebaseUid);
+        
+        if (!user) {
+          return res.status(200).json({ 
+            verified: true,
+            found: false,
+            message: "User verified but not found in database",
+            firebaseUid
+          });
+        }
+        
+        return res.status(200).json({
+          verified: true,
+          found: true,
+          databaseId: user.id,
+          firebaseUid: firebaseUid,
+          onboardingCompleted: user.onboardingCompleted || false,
+          message: "Firebase token verification successful"
+        });
+        
+      } catch (error: any) {
+        console.error('[Debug API] Token verification failed:', error);
+        return res.status(401).json({ 
+          error: true,
+          message: 'Invalid token',
+          detail: error.message || 'Unknown error'
+        });
+      }
+    } catch (error: any) {
+      console.error('[Debug API] Error:', error);
+      return res.status(500).json({ 
+        error: true,
+        message: 'Server error',
+        detail: error.message || 'Unknown error'
+      });
+    }
+  });
+  
+  // Check if onboarding is completed and mark it as completed (original ReAuth version)
+  app.get('/api/auth/onboarding-status', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      
+      // First check if we already have onboarding status in the session
+      const sessionOnboardingStatus = req.user.onboardingCompleted === true;
+      
+      if (sessionOnboardingStatus) {
+        console.log("Onboarding status from session: completed");
+        return res.status(200).json({ 
+          onboardingCompleted: true,
+          source: 'session'
+        });
+      }
+      
+      // If not in session, get from database
+      const user = await storage.getUser(userId);
+      
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+      
+      // If completed in database but not in session, update session
+      if (user.onboardingCompleted && !sessionOnboardingStatus) {
+        console.log("Onboarding status from DB: completed, updating session");
+        req.user.onboardingCompleted = true;
+        
+        // Save session 
+        req.session.save((saveErr) => {
+          if (saveErr) {
+            console.error("Error saving session with onboarding status:", saveErr);
+          }
+        });
+      } else {
+        console.log("Onboarding status from DB:", user.onboardingCompleted ? "completed" : "incomplete");
+      }
+      
+      return res.status(200).json({ 
+        onboardingCompleted: user.onboardingCompleted,
+        source: 'database'
+      });
+    } catch (error) {
+      console.error("Error checking onboarding status:", error);
+      res.status(500).json({ message: "Failed to check onboarding status" });
+    }
+  });
+  
+  // Mark onboarding as completed (Firebase Auth version)
+  app.post('/api/firebase/auth/complete-onboarding', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    try {
+      // Extract user ID from firebase authentication
+      const firebaseUid = req.firebaseUser.uid;
+      const user = req.user;
+      
+      if (!user) {
+        console.error(`[Firebase Auth] User missing in request after ensureFirebaseUser middleware`);
+        return res.status(404).json({ 
+          success: false,
+          message: "User not found"
+        });
+      }
+      
+      console.log(`[Firebase Auth] Marking onboarding as completed for user ${user.id} (Firebase UID: ${firebaseUid})`);
+      
+      // Update onboarding status in database - use the user's database ID
+      const updatedUser = await storage.updateOnboardingStatus(user.id, true);
+      
+      if (!updatedUser) {
+        console.error(`[Firebase Auth] Failed to update onboarding status for user ${user.id}`);
+        return res.status(500).json({
+          success: false,
+          message: "Failed to update onboarding status in database"
+        });
+      }
+      
+      console.log(`[Firebase Auth] Onboarding marked as completed in database for user ${user.id}`);
+      
+      return res.status(200).json({ 
+        success: true,
+        message: "Onboarding marked as completed",
+        user: updatedUser
+      });
+    } catch (error) {
+      console.error("[Firebase Auth] Error updating onboarding status:", error);
+      res.status(500).json({ 
+        success: false,
+        message: "Failed to update onboarding status",
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  });
+  
+  // Mark onboarding as completed (old Replit auth version)
+  app.post('/api/auth/complete-onboarding', isAuthenticated, async (req: any, res) => {
+    try {
+      // Check if user is authenticated
+      if (!req.isAuthenticated() || !req.user || !req.user.claims) {
+        console.error("Authentication failed in complete-onboarding:", {
+          isAuthenticated: req.isAuthenticated(),
+          hasUser: !!req.user,
+          userInfo: req.user ? 'User object exists' : 'No user object'
+        });
+        return res.status(401).json({ 
+          success: false,
+          message: "Authentication required to complete onboarding" 
+        });
+      }
+      
+      // Extract user ID from authentication
+      const userId = req.user.claims.sub || req.user.id;
+      console.log("Marking onboarding as completed for user:", userId);
+      
+      // Update onboarding status in database
+      const updatedUser = await storage.updateOnboardingStatus(userId, true);
+      console.log("Onboarding marked as completed in database");
+      
+      // Also update the session data with onboardingCompleted flag
+      // This ensures the client sees the updated status immediately
+      if (req.user) {
+        if (!req.user.onboardingCompleted) {
+          console.log("Updating onboarding completion in session");
+          req.user.onboardingCompleted = true;
+          
+          // Save session to ensure changes persist
+          req.session.save((saveErr) => {
+            if (saveErr) {
+              console.error("Error saving session after onboarding update:", saveErr);
+            } else {
+              console.log("Session saved with updated onboarding status");
+            }
+          });
+        }
+      }
+      
+      return res.status(200).json({ 
+        success: true,
+        message: "Onboarding marked as completed",
+        user: updatedUser
+      });
+    } catch (error) {
+      console.error("Error updating onboarding status:", error);
+      res.status(500).json({ 
+        success: false,
+        message: "Failed to update onboarding status",
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  });
+
+  // IELTS Study Plan Generation Endpoint (Firebase Auth version)
+  app.post('/api/firebase/plan/generate', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    try {
+      const payload = req.body;
+      
+      // Extract the user from the request
+      // This is set by ensureFirebaseUser middleware and has already been looked up 
+      // by Firebase UID, email, or username
+      const user = req.user;
+      
+      // Use the database ID for all database operations
+      const userId = user.id;
+      
+      // Extract Firebase UID for logging
+      const firebaseUid = req.firebaseUser.uid;
+      
+      // Log the payload to the server console
+      console.log('[Firebase Auth] Received onboarding data for plan generation for user:', userId, '(Firebase UID:', firebaseUid, ')');
+      
+      // Debug testDate
+      console.log('testDate debug:', {
+        type: typeof payload.testDate, 
+        value: payload.testDate,
+        isDate: payload.testDate instanceof Date
+      });
+      
+      // Preprocess the date format if it's a string
+      if (payload.testDate && typeof payload.testDate === 'string') {
+        try {
+          payload.testDate = new Date(payload.testDate);
+          console.log('Converted testDate from string to Date:', payload.testDate);
+        } catch (e) {
+          console.error('Error parsing test date:', e);
+          payload.testDate = null;
+        }
+      }
+      
+      // Validate request data with detailed error reporting
+      const validation = onboardingSchema.safeParse(payload);
+      
+      if (!validation.success) {
+        const formattedErrors = validation.error.flatten();
+        console.error('Onboarding validation failed:', {
+          fieldErrors: formattedErrors.fieldErrors,
+          formErrors: formattedErrors.formErrors
+        });
+        return res.status(400).json({ 
+          success: false, 
+          message: "Invalid onboarding data", 
+          errors: formattedErrors
+        });
+      }
+      
+      const onboardingData = validation.data;
+      
+      // Use database user ID for all operations
+      console.log(`[Firebase Auth] Generating plan for database user ID: ${userId} (Firebase UID: ${firebaseUid})`);
+      
+      // Generate plan with OpenAI
+      console.log('[Firebase Auth] Generating IELTS study plan for:', onboardingData.fullName);
+      try {
+        console.log('[Firebase Auth] Calling OpenAI to generate a complete IELTS study plan...');
+        const plan = await generateIELTSPlan(onboardingData);
+        
+        // Save plan to database if valid
+        if (plan) {
+          console.log('[Firebase Auth] Plan generated successfully, saving to database...');
+          const planId = uuidv4();
+          
+          try {
+            // Make sure targetBandScore is a proper decimal/number value
+            // Parse band score as number for database
+            const targetBandScore = typeof onboardingData.targetBandScore === 'string' 
+              ? parseFloat(onboardingData.targetBandScore) 
+              : onboardingData.targetBandScore;
+            
+            // Convert to string for database insertion (as schema requires)
+            const targetBandScoreStr = targetBandScore.toString();
+            
+            const studyPlan = await storage.createStudyPlan({
+              id: planId,
+              userId: userId,
+              fullName: onboardingData.fullName,
+              phoneNumber: onboardingData.phoneNumber || null,
+              targetBandScore: targetBandScoreStr, // Using string value as schema requires
+              testDate: onboardingData.testDate ? new Date(onboardingData.testDate) : null,
+              notDecided: onboardingData.notDecided ? "true" : "false",
+              skillRatings: onboardingData.skillRatings,
+              immigrationGoal: onboardingData.immigrationGoal,
+              studyPreferences: onboardingData.studyPreferences,
+              plan: plan,
+              createdAt: new Date(),
+              updatedAt: new Date()
+            });
+            
+            // Generate and save Week 1 Listening plan automatically
+            console.log('[Firebase Auth] Generating Week 1 Listening plan automatically...');
+            try {
+              // Generate the initial Listening plan for Week 1
+              const listeningResult = await generateListeningStudyPlan(onboardingData);
+              
+              if ('success' in listeningResult && listeningResult.success === false) {
+                console.error("[Firebase Auth] Warning: Couldn't generate Listening plan:", listeningResult.reason);
+                // Continue despite the error as we've already saved the main study plan
+              } else {
+                // Generate a weekFocus if needed
+                const weekFocus = 'weekFocus' in listeningResult 
+                  ? listeningResult.weekFocus 
+                  : "Foundational listening skills for IELTS";
+                
+                // Save the Week 1 Listening plan
+                await storage.createOrUpdateWeeklyStudyPlan(
+                  userId,
+                  1, // Week 1
+                  "Listening", // Skill focus
+                  weekFocus,
+                  listeningResult
+                );
+                console.log('[Firebase Auth] Week 1 Listening plan created successfully');
+              }
+            } catch (weeklyPlanError) {
+              console.error("[Firebase Auth] Error creating automatic Week 1 Listening plan:", weeklyPlanError);
+              // Continue despite the error as we've already saved the main study plan
+            }
+            
+            return res.status(201).json({
+              success: true,
+              message: "IELTS study plan generated successfully",
+              planId: planId,
+              plan: plan
+            });
+          } catch (dbError: any) {
+            console.error("[Firebase Auth] Database error while saving plan:", dbError);
+            return res.status(500).json({
+              success: false,
+              message: "Failed to save your study plan to the database",
+              error: dbError.message || "Unknown database error"
+            });
+          }
+        } else {
+          throw new Error("[Firebase Auth] Failed to generate study plan: OpenAI returned empty response");
+        }
+      } catch (openaiError: any) {
+        console.error("[Firebase Auth] OpenAI API error:", openaiError);
+        return res.status(500).json({
+          success: false, 
+          message: "Failed to generate IELTS study plan. Please try again later.",
+          error: openaiError.message || "Unknown OpenAI error"
+        });
+      }
+    } catch (error) {
+      console.error("[Firebase Auth] Error generating IELTS study plan:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to generate IELTS study plan. Please try again later."
+      });
+    }
+  });
+      
+  // Original endpoint with Firebase authentication
+  app.post('/api/plan/generate', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    try {
+      const payload = req.body;
+      
+      // Use the database user ID from the ensureFirebaseUser middleware
+      const user = req.user;
+      // Always use the database ID, not Firebase UID for database operations
+      const userId = user.id;
+      const firebaseUid = req.firebaseUser.uid;
+      
+      // Log the payload and user information to the server console
+      console.log(`[Firebase Auth] Received onboarding data for plan generation for user: ${userId} (Firebase UID: ${firebaseUid})`);
+      console.log('Onboarding payload data:', JSON.stringify(payload, null, 2));
+      
+      // Debug testDate
+      console.log('testDate debug:', {
+        type: typeof payload.testDate, 
+        value: payload.testDate,
+        isDate: payload.testDate instanceof Date
+      });
+      
+      // Preprocess the date format if it's a string
+      if (payload.testDate && typeof payload.testDate === 'string') {
+        try {
+          payload.testDate = new Date(payload.testDate);
+          console.log('Converted testDate from string to Date:', payload.testDate);
+        } catch (e) {
+          console.error('Error parsing test date:', e);
+          payload.testDate = null;
+        }
+      }
+      
+      // Validate request data with detailed error reporting
+      const validation = onboardingSchema.safeParse(payload);
+      
+      if (!validation.success) {
+        const formattedErrors = validation.error.flatten();
+        console.error('[Firebase Auth] Onboarding validation failed:', {
+          fieldErrors: formattedErrors.fieldErrors,
+          formErrors: formattedErrors.formErrors
+        });
+        return res.status(400).json({ 
+          success: false, 
+          message: "Invalid onboarding data", 
+          errors: formattedErrors
+        });
+      }
+      
+      const onboardingData = validation.data;
+      
+      // Generate plan with OpenAI
+      console.log('Generating IELTS study plan for:', onboardingData.fullName);
+      try {
+        console.log('Calling OpenAI to generate a complete IELTS study plan...');
+        const plan = await generateIELTSPlan(onboardingData);
+        
+        // Save plan to database if valid
+        if (plan) {
+          console.log('Plan generated successfully, saving to database...');
+          const planId = uuidv4();
+          
+          try {
+            // Make sure targetBandScore is a proper decimal/number value
+            // Parse band score as number for database
+            const targetBandScore = typeof onboardingData.targetBandScore === 'string' 
+              ? parseFloat(onboardingData.targetBandScore) 
+              : onboardingData.targetBandScore;
+            
+            // Convert to string for database insertion (as schema requires)
+            const targetBandScoreStr = targetBandScore.toString();
+            
+            const studyPlan = await storage.createStudyPlan({
+              id: planId,
+              userId: userId,
+              fullName: onboardingData.fullName,
+              phoneNumber: onboardingData.phoneNumber || null,
+              targetBandScore: targetBandScoreStr, // Using string value as schema requires
+              testDate: onboardingData.testDate ? new Date(onboardingData.testDate) : null,
+              notDecided: onboardingData.notDecided ? "true" : "false",
+              skillRatings: onboardingData.skillRatings,
+              immigrationGoal: onboardingData.immigrationGoal,
+              studyPreferences: onboardingData.studyPreferences,
+              plan: plan,
+              createdAt: new Date(),
+              updatedAt: new Date()
+            });
+            
+            // Generate and save Week 1 Listening plan automatically
+            console.log('Generating Week 1 Listening plan automatically...');
+            try {
+              // Generate the initial Listening plan for Week 1
+              const listeningResult = await generateListeningStudyPlan(onboardingData);
+              
+              if ('success' in listeningResult && listeningResult.success === false) {
+                console.error("Warning: Couldn't generate Listening plan:", listeningResult.reason);
+                // Continue despite the error as we've already saved the main study plan
+              } else {
+                // Generate a weekFocus if needed
+                const weekFocus = 'weekFocus' in listeningResult 
+                  ? listeningResult.weekFocus 
+                  : "Foundational listening skills for IELTS";
+                
+                // Save the Week 1 Listening plan
+                const weeklyPlan = await storage.createOrUpdateWeeklyStudyPlan(
+                  userId,
+                  1, // Week 1
+                  "Listening", // Skill focus
+                  weekFocus,
+                  listeningResult
+                );
+                console.log(`[Firebase Auth] Week 1 Listening plan created successfully for user ${userId} (Firebase UID: ${firebaseUid})`);
+                console.log(`[Firebase Auth] Created plan ID: ${weeklyPlan.id}`);
+              }
+            } catch (weeklyPlanError) {
+              console.error("Error creating automatic Week 1 Listening plan:", weeklyPlanError);
+              // Continue despite the error as we've already saved the main study plan
+            }
+            
+            return res.status(201).json({
+              success: true,
+              message: "IELTS study plan generated successfully",
+              planId: planId,
+              plan: plan
+            });
+          } catch (dbError: any) {
+            console.error("Database error while saving plan:", dbError);
+            return res.status(500).json({
+              success: false,
+              message: "Failed to save your study plan to the database",
+              error: dbError.message || "Unknown database error"
+            });
+          }
+        } else {
+          throw new Error("Failed to generate study plan: OpenAI returned empty response");
+        }
+      } catch (openaiError: any) {
+        console.error("OpenAI API error:", openaiError);
+        return res.status(500).json({
+          success: false, 
+          message: "Failed to generate IELTS study plan. Please try again later.",
+          error: openaiError.message || "Unknown OpenAI error"
+        });
+      }
+    } catch (error) {
+      console.error("Error generating IELTS study plan:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to generate IELTS study plan. Please try again later."
+      });
+    }
+  });
+  
+  // Google Sign-In Authentication
+  app.post('/api/auth/google', async (req, res) => {
+    try {
+      const userData = req.body;
+      
+      // First check if a user with this Google ID already exists
+      const existingGoogleUser = await storage.getUserByGoogleId(userData.googleId);
+      
+      if (existingGoogleUser) {
+        // User already exists with this Google ID, just update profile if needed
+        const updatedUser = await storage.upsertUser({
+          id: existingGoogleUser.id,
+          username: existingGoogleUser.username,
+          email: userData.email,
+          firstName: userData.firstName || existingGoogleUser.firstName,
+          lastName: userData.lastName || existingGoogleUser.lastName,
+          profileImageUrl: userData.profileImageUrl || existingGoogleUser.profileImageUrl,
+          googleId: userData.googleId,
+          firebaseUid: existingGoogleUser.firebaseUid
+        });
+        
+        // Store user ID in session
+        if (req.session) {
+          req.login(updatedUser, (err) => {
+            if (err) {
+              console.error("Session login error:", err);
+            }
+          });
+        }
+        
+        return res.status(200).json({ 
+          success: true, 
+          message: "Login successful", 
+          user: updatedUser 
+        });
+      }
+      
+      // Check if user exists by email
+      const existingEmailUser = await storage.getUserByEmail(userData.email);
+      
+      if (existingEmailUser) {
+        // User exists with this email but not Google ID, update to link Google account
+        const updatedUser = await storage.upsertUser({
+          id: existingEmailUser.id,
+          username: existingEmailUser.username,
+          email: userData.email,
+          firstName: userData.firstName || existingEmailUser.firstName,
+          lastName: userData.lastName || existingEmailUser.lastName,
+          profileImageUrl: userData.profileImageUrl || existingEmailUser.profileImageUrl,
+          googleId: userData.googleId,
+          firebaseUid: existingEmailUser.firebaseUid
+        });
+        
+        // Store user ID in session
+        if (req.session) {
+          req.login(updatedUser, (err) => {
+            if (err) {
+              console.error("Session login error:", err);
+            }
+          });
+        }
+        
+        return res.status(200).json({ 
+          success: true, 
+          message: "Account linked with Google", 
+          user: updatedUser 
+        });
+      } else {
+        // Create completely new user with Google data
+        const userId = userData.googleId; // Using Google ID as user ID
+        const username = userData.email.split('@')[0]; // Default username from email
+        
+        const newUser = await storage.upsertUser({
+          id: userId,
+          username: username,
+          email: userData.email,
+          firstName: userData.firstName || null,
+          lastName: userData.lastName || null,
+          profileImageUrl: userData.profileImageUrl || null,
+          googleId: userData.googleId,
+          firebaseUid: null
+        });
+        
+        // Store user ID in session using Passport
+        if (req.session) {
+          req.login(newUser, (err) => {
+            if (err) {
+              console.error("Session login error:", err);
+            }
+          });
+        }
+        
+        return res.status(201).json({ 
+          success: true, 
+          message: "New user created and logged in", 
+          user: newUser 
+        });
+      }
+    } catch (error) {
+      console.error("Google authentication error:", error);
+      return res.status(500).json({ 
+        success: false, 
+        message: "Authentication failed. Please try again." 
+      });
+    }
+  });
+
+  // Firebase Email/Password Registration
+  app.post('/api/auth/email/register', async (req, res) => {
+    try {
+      const userData = req.body;
+      
+      // First check if a user with this Firebase UID already exists
+      const existingFirebaseUser = await storage.getUserByFirebaseUid(userData.firebaseUid);
+      
+      if (existingFirebaseUser) {
+        // User already exists with this Firebase UID
+        return res.status(200).json({ 
+          success: true, 
+          message: "User already exists", 
+          user: existingFirebaseUser 
+        });
+      }
+      
+      // Check if user exists by email
+      const existingEmailUser = await storage.getUserByEmail(userData.email);
+      
+      if (existingEmailUser) {
+        // If user already exists with this email but different auth method
+        return res.status(400).json({ 
+          success: false, 
+          message: "User with this email already exists. Please log in with your existing account." 
+        });
+      } else {
+        // Create new user with Firebase UID
+        const newUser = await storage.upsertUser({
+          id: userData.firebaseUid, // Use Firebase UID as user ID
+          username: userData.username || userData.email.split('@')[0], // Fallback to email prefix if no username
+          email: userData.email,
+          firstName: userData.firstName || null,
+          lastName: userData.lastName || null,
+          profileImageUrl: userData.profileImageUrl || null,
+          firebaseUid: userData.firebaseUid,
+          googleId: null
+        });
+        
+        return res.status(201).json({ 
+          success: true, 
+          message: "New user created", 
+          user: newUser 
+        });
+      }
+    } catch (error) {
+      console.error("Email registration error:", error);
+      return res.status(500).json({ 
+        success: false, 
+        message: "Account creation failed. Please try again." 
+      });
+    }
+  });
+  
+  // Firebase Email/Password Login
+  app.post('/api/auth/email/login', async (req, res) => {
+    try {
+      const { firebaseUid } = req.body;
+      
+      // Get user by Firebase UID
+      const user = await storage.getUserByFirebaseUid(firebaseUid);
+      
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: "User not found. Please register first."
+        });
+      }
+      
+      // Store user ID in session using Passport
+      if (req.session) {
+        req.login(user, (err) => {
+          if (err) {
+            console.error("Session login error:", err);
+            return res.status(500).json({
+              success: false,
+              message: "Failed to create session. Please try again."
+            });
+          }
+        });
+      }
+      
+      return res.status(200).json({
+        success: true,
+        message: "Login successful",
+        user
+      });
+      
+    } catch (error) {
+      console.error("Email login error:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Login failed. Please try again."
+      });
+    }
+  });
+
+  // Protected route example
+  app.get("/api/protected", isAuthenticated, async (req: any, res) => {
+    res.json({ message: "This is a protected route", user: req.user.claims });
+  });
+
+  // Listening plan generation endpoint using OpenAI
+  app.post('/api/plan/generate-listening', async (req, res) => {
+    try {
+      const payload = req.body;
+      
+      // Log the payload to the server console
+      console.log('Received onboarding data for listening plan:', JSON.stringify(payload, null, 2));
+      
+      // Debug testDate
+      console.log('testDate debug:', {
+        type: typeof payload.testDate, 
+        value: payload.testDate,
+        isDate: payload.testDate instanceof Date
+      });
+      
+      // Preprocess the date format if it's a string
+      if (payload.testDate && typeof payload.testDate === 'string') {
+        try {
+          payload.testDate = new Date(payload.testDate);
+          console.log('Converted testDate from string to Date:', payload.testDate);
+        } catch (e) {
+          console.error('Error parsing test date:', e);
+          payload.testDate = null;
+        }
+      }
+      
+      // Validate the data using onboardingSchema with detailed error reporting
+      const validation = onboardingSchema.safeParse(payload);
+      
+      if (!validation.success) {
+        const formattedErrors = validation.error.flatten();
+        console.error('Onboarding validation failed:', {
+          fieldErrors: formattedErrors.fieldErrors,
+          formErrors: formattedErrors.formErrors
+        });
+        return res.status(400).json({ 
+          success: false, 
+          message: "Invalid onboarding data", 
+          errors: formattedErrors
+        });
+      }
+      
+      // Call the OpenAI helper function
+      console.log('Generating listening study plan...');
+      const listeningResult = await generateListeningStudyPlan(validation.data);
+      
+      // Check if the result indicates a failure
+      if ('success' in listeningResult && listeningResult.success === false) {
+        console.error("OpenAI error generating listening plan:", listeningResult.reason);
+        return res.status(500).json({
+          success: false,
+          message: "There was an error generating your listening study plan",
+          error: listeningResult.reason,
+          details: listeningResult.details
+        });
+      }
+      
+      // Return the generated plan (successful case)
+      return res.status(200).json({
+        success: true,
+        message: "Listening study plan generated successfully",
+        plan: listeningResult
+      });
+    } catch (error) {
+      console.error("Error generating listening study plan:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to generate listening study plan. Please try again."
+      });
+    }
+  });
+  
+  // Simple plan generation endpoint that just logs the payload (keeping for reference)
+  app.post('/api/plan/generate-simple', async (req, res) => {
+    try {
+      const payload = req.body;
+      
+      // Log the payload to the server console
+      console.log('Received onboarding data:', JSON.stringify(payload, null, 2));
+      
+      // Return success response
+      return res.status(200).json({
+        success: true,
+        message: "Data received"
+      });
+    } catch (error) {
+      console.error("Error processing onboarding data:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to process data"
+      });
+    }
+  });
+  
+  // Weekly Study Plan API Endpoints
+  
+  // Create or update a weekly study plan (Firebase Auth version)
+  app.post('/api/firebase/weekly-plan', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    try {
+      const userId = req.firebaseUser.uid;
+      const { weekNumber, skillFocus, weekFocus, planData } = req.body;
+      
+      console.log(`[Firebase Auth] Creating/updating weekly plan for user ${userId}, week ${weekNumber}, skill ${skillFocus}`);
+      
+      // Validate required fields
+      if (!weekNumber || !skillFocus || !planData) {
+        return res.status(400).json({
+          success: false,
+          message: "Missing required fields: weekNumber, skillFocus, and planData are required"
+        });
+      }
+      
+      // Create or update the weekly study plan
+      const weeklyPlan = await storage.createOrUpdateWeeklyStudyPlan(
+        userId,
+        weekNumber,
+        skillFocus,
+        weekFocus || "",
+        planData
+      );
+      
+      return res.status(200).json({
+        success: true,
+        message: "Weekly study plan created/updated successfully",
+        plan: weeklyPlan
+      });
+    } catch (error) {
+      console.error("[Firebase Auth] Error creating/updating weekly study plan:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to create/update weekly study plan"
+      });
+    }
+  });
+  // Create or update a weekly study plan (ReAuth version)
+  app.post('/api/weekly-plan', isAuthenticated, async (req: any, res) => {
+    try {
+      // CRITICAL FIX: Extract the stable ID consistently across auth methods
+      const userId = req.user.id || (req.user.claims ? req.user.claims.sub : null);
+      
+      if (!userId) {
+        return res.status(401).json({
+          success: false,
+          message: "Unable to determine user ID"
+        });
+      }
+      
+      const { weekNumber, skillFocus, weekFocus, planData } = req.body;
+      
+      // Log debugging information
+      console.log(`[ReAuth] Creating/updating weekly plan for user ${userId}, week ${weekNumber}, skill ${skillFocus}`);
+      
+      // Validate required fields
+      if (!weekNumber || !skillFocus || !planData) {
+        return res.status(400).json({
+          success: false,
+          message: "Missing required fields: weekNumber, skillFocus, and planData are required"
+        });
+      }
+      
+      // Create or update the weekly study plan
+      const weeklyPlan = await storage.createOrUpdateWeeklyStudyPlan(
+        userId,
+        weekNumber,
+        skillFocus,
+        weekFocus || "",
+        planData
+      );
+      
+      return res.status(200).json({
+        success: true,
+        message: "Weekly study plan created/updated successfully",
+        plan: weeklyPlan
+      });
+    } catch (error) {
+      console.error("Error creating/updating weekly study plan:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to create/update weekly study plan"
+      });
+    }
+  });
+  
+  // Get a weekly study plan by week and skill (Firebase Auth version)
+  app.get('/api/firebase/weekly-plan/:weekNumber/:skillFocus', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    try {
+      // Use the database user ID from the ensureFirebaseUser middleware
+      const user = req.user;
+      // Always use the database ID, not Firebase UID for database operations
+      const userId = user.id;
+      const firebaseUid = req.firebaseUser.uid;
+      
+      const weekNumber = parseInt(req.params.weekNumber);
+      const skillFocus = req.params.skillFocus;
+      
+      console.log(`[Firebase Auth] Getting weekly plan for user ${userId} (Firebase UID: ${firebaseUid}), week ${weekNumber}, skill ${skillFocus}`);
+      
+      if (isNaN(weekNumber)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid week number"
+        });
+      }
+      
+      const weeklyPlan = await storage.getWeeklyStudyPlanByWeekAndSkill(
+        userId,
+        weekNumber,
+        skillFocus
+      );
+      
+      if (!weeklyPlan) {
+        return res.status(404).json({
+          success: false,
+          message: "Weekly study plan not found"
+        });
+      }
+      
+      return res.status(200).json({
+        success: true,
+        plan: weeklyPlan
+      });
+    } catch (error) {
+      console.error("[Firebase Auth] Error fetching weekly study plan:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch weekly study plan"
+      });
+    }
+  });
+  
+  // Get a weekly study plan by week and skill (ReAuth version)
+  app.get('/api/weekly-plan/:weekNumber/:skillFocus', isAuthenticated, async (req: any, res) => {
+    try {
+      // CRITICAL FIX: Extract the stable ID consistently across auth methods
+      const userId = req.user.id || (req.user.claims ? req.user.claims.sub : null);
+      
+      if (!userId) {
+        return res.status(401).json({
+          success: false,
+          message: "Unable to determine user ID"
+        });
+      }
+      
+      console.log(`[ReAuth] Getting weekly plan for user ${userId}, week ${req.params.weekNumber}, skill ${req.params.skillFocus}`);
+      
+      const weekNumber = parseInt(req.params.weekNumber);
+      const skillFocus = req.params.skillFocus;
+      
+      if (isNaN(weekNumber)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid week number"
+        });
+      }
+      
+      const weeklyPlan = await storage.getWeeklyStudyPlanByWeekAndSkill(
+        userId,
+        weekNumber,
+        skillFocus
+      );
+      
+      if (!weeklyPlan) {
+        return res.status(404).json({
+          success: false,
+          message: "Weekly study plan not found"
+        });
+      }
+      
+      return res.status(200).json({
+        success: true,
+        plan: weeklyPlan
+      });
+    } catch (error) {
+      console.error("Error fetching weekly study plan:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch weekly study plan"
+      });
+    }
+  });
+  
+  // Debug route for weekly plan retrieval with Firebase authentication
+  app.get('/api/firebase/debug/weekly-plan/:weekNumber/:skillFocus', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    try {
+      // Use the database user ID from the ensureFirebaseUser middleware
+      const user = req.user;
+      // Always use the database ID, not Firebase UID for database operations
+      const userId = user.id;
+      const firebaseUid = req.firebaseUser.uid;
+      
+      const weekNumber = parseInt(req.params.weekNumber);
+      const skillFocus = req.params.skillFocus;
+      
+      // Log params
+      console.log('[Firebase Auth] [Weekly Plan Debug] Querying with params:', {
+        userId, firebaseUid, weekNumber, skillFocus
+      });
+      
+      // Get data from DB directly
+      const weeklyPlan = await storage.getWeeklyStudyPlanByWeekAndSkill(
+        userId,
+        weekNumber,
+        skillFocus
+      );
+      
+      // Log results
+      console.log('[Weekly Plan Debug] Query result:', {
+        found: !!weeklyPlan,
+        planId: weeklyPlan?.id,
+        userId: weeklyPlan?.userId
+      });
+      
+      if (!weeklyPlan) {
+        return res.status(404).json({
+          success: false,
+          message: "Weekly study plan not found"
+        });
+      }
+      
+      return res.status(200).json({
+        success: true,
+        plan: weeklyPlan
+      });
+    } catch (error) {
+      console.error("Error in debug weekly plan endpoint:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch weekly study plan",
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  });
+  
+  // Get all weekly study plans for the authenticated user (Firebase Auth version)
+  app.get('/api/firebase/weekly-plans', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    try {
+      // Use the database user ID from the ensureFirebaseUser middleware
+      const user = req.user;
+      // Always use the database ID, not Firebase UID for database operations
+      const userId = user.id;
+      const firebaseUid = req.firebaseUser.uid;
+      
+      console.log(`[Firebase Auth] Getting all weekly plans for user ${userId} (Firebase UID: ${firebaseUid})`);
+      
+      const weeklyPlans = await storage.getWeeklyStudyPlansByUserId(userId);
+      
+      return res.status(200).json({
+        success: true,
+        plans: weeklyPlans
+      });
+    } catch (error) {
+      console.error("[Firebase Auth] Error fetching weekly study plans:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch weekly study plans"
+      });
+    }
+  });
+  
+  /**
+   * Get all weekly plans for a specific week (optimized batch endpoint)
+   * This endpoint retrieves all skills (Listening, Reading, Writing, Speaking) for a week in a single batch
+   * to significantly reduce Firebase operations and improve scalability
+   */
+  app.get('/api/firebase/weekly-plans/week/:weekNumber', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    try {
+      // Use the database user ID from the ensureFirebaseUser middleware
+      const user = req.user;
+      // Always use the database ID, not Firebase UID for database operations
+      const userId = user.id;
+      const firebaseUid = req.firebaseUser.uid;
+      
+      const weekNumber = parseInt(req.params.weekNumber);
+      
+      if (isNaN(weekNumber) || weekNumber < 1 || weekNumber > 12) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid week number. Must be a number between 1 and 12."
+        });
+      }
+      
+      console.log(`[Firebase Auth] Getting all weekly plans for user ${userId} for week ${weekNumber} (Firebase UID: ${firebaseUid})`);
+      
+      // Fetch all plans for this week in a single database operation
+      const weeklyPlans = await storage.getWeeklyStudyPlansByWeek(userId, weekNumber);
+      
+      return res.status(200).json({
+        success: true,
+        plans: weeklyPlans,
+        weekNumber: weekNumber
+      });
+    } catch (error) {
+      console.error("[Firebase Auth] Error fetching weekly study plans for week:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch weekly study plans for week"
+      });
+    }
+  });
+  
+  // Get all weekly study plans for the authenticated user (ReAuth version)
+  app.get('/api/weekly-plans', isAuthenticated, async (req: any, res) => {
+    try {
+      // CRITICAL FIX: Extract the stable ID consistently across auth methods
+      const userId = req.user.id || (req.user.claims ? req.user.claims.sub : null);
+      
+      if (!userId) {
+        return res.status(401).json({
+          success: false,
+          message: "Unable to determine user ID"
+        });
+      }
+      
+      console.log(`[ReAuth] Getting all weekly plans for user ${userId}`);
+      
+      const weeklyPlans = await storage.getWeeklyStudyPlansByUserId(userId);
+      
+      return res.status(200).json({
+        success: true,
+        plans: weeklyPlans
+      });
+    } catch (error) {
+      console.error("Error fetching weekly study plans:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch weekly study plans"
+      });
+    }
+  });
+  
+  // Create a listening weekly study plan from OpenAI (Firebase Auth version)
+  app.post('/api/firebase/weekly-plan/generate-listening', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    try {
+      // Use the database user ID from the ensureFirebaseUser middleware
+      const user = req.user;
+      // Always use the database ID, not Firebase UID for database operations
+      const userId = user.id;
+      const firebaseUid = req.firebaseUser.uid;
+      
+      console.log(`[Firebase Auth] Generating listening weekly plan for user ${userId} (Firebase UID: ${firebaseUid})`);
+      
+      let { weekNumber } = req.body;
+      
+      // If weekNumber isn't provided, calculate it using getCurrentWeekNumber
+      if (!weekNumber) {
+        try {
+          // Get user data for calculating current week
+          const userWeekData = await storage.getUser(userId);
+          
+          if (userWeekData) {
+            // Import and use the getCurrentWeekNumber utility
+            const { getCurrentWeekNumber } = await import('../client/src/lib/weekUtils');
+            // Convert user to UserProfile format expected by getCurrentWeekNumber
+            const userProfile = {
+              id: userWeekData.id,
+              createdAt: userWeekData.createdAt || new Date()
+            };
+            weekNumber = getCurrentWeekNumber(userProfile);
+            console.log(`[Firebase Auth] Calculated current week number: ${weekNumber} for user ${userId}`);
+          } else {
+            weekNumber = 1; // Default to week 1 if we can't determine the user's week
+          }
+        } catch (weekError) {
+          console.error("[Firebase Auth] Error calculating week number:", weekError);
+          weekNumber = 1; // Default to week 1 if calculation fails
+        }
+      }
+      
+      // Validate the week number
+      if (!weekNumber || isNaN(weekNumber)) {
+        return res.status(400).json({
+          success: false,
+          message: "Valid weekNumber is required"
+        });
+      }
+      
+      // Get user onboarding data
+      const userOnboarding = await storage.getUser(userId);
+      if (!userOnboarding) {
+        return res.status(404).json({
+          success: false,
+          message: "User not found"
+        });
+      }
+      
+      // Get existing study plans for user information
+      const existingPlans = await storage.getStudyPlansByUserId(userId);
+      if (!existingPlans || existingPlans.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "No study plan found. Please complete onboarding first."
+        });
+      }
+      
+      // Use the most recent plan for information
+      const latestPlan = existingPlans.sort((a, b) => 
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      )[0];
+      
+      // Make sure targetBandScore is a proper decimal/number value
+      const targetBandScore = typeof latestPlan.targetBandScore === 'string' 
+        ? parseFloat(latestPlan.targetBandScore) 
+        : latestPlan.targetBandScore;
+        
+      // Check if a plan already exists for this user, week, and skill
+      const existingWeeklyPlan = await storage.getWeeklyStudyPlanByWeekAndSkill(
+        userId,
+        Number(weekNumber),
+        "Listening"
+      );
+      
+      // If a plan already exists, return it instead of generating a new one
+      if (existingWeeklyPlan) {
+        console.log(`[Firebase Auth] Found existing weekly plan for Week ${weekNumber} - Listening`);
+        return res.status(200).json({
+          success: true,
+          message: "Retrieved existing weekly plan",
+          plan: existingWeeklyPlan,
+          currentWeek: Number(weekNumber)
+        });
+      }
+      
+      // No existing plan, so generate a new one using OpenAI
+      console.log(`[Firebase Auth] Generating new weekly plan for Week ${weekNumber} - Listening`);
+      
+      // Safe test date handling
+      let parsedTestDate = null;
+      if (latestPlan.testDate) {
+        try {
+          parsedTestDate = new Date(latestPlan.testDate);
+          console.log('[Firebase Auth] Converted weekly plan testDate:', parsedTestDate);
+        } catch (e) {
+          console.error('[Firebase Auth] Failed to parse test date for weekly plan:', e);
+        }
+      }
+        
+      // Include the weekNumber in the study plan generation for week-specific content
+      const listeningResult = await generateListeningStudyPlan({
+        weekNumber: Number(weekNumber), // Pass the week number to the GPT function
+        fullName: latestPlan.fullName,
+        phoneNumber: latestPlan.phoneNumber || "",
+        targetBandScore: targetBandScore,
+        testDate: parsedTestDate,
+        notDecided: latestPlan.notDecided === "true",
+        skillRatings: latestPlan.skillRatings as any,
+        immigrationGoal: latestPlan.immigrationGoal as any,
+        studyPreferences: latestPlan.studyPreferences as any
+      });
+      
+      // Check if the result indicates a failure
+      if ('success' in listeningResult && listeningResult.success === false) {
+        console.error("[Firebase Auth] OpenAI error generating listening plan:", listeningResult.reason);
+        return res.status(500).json({
+          success: false,
+          message: "There was an error generating your listening study plan",
+          error: listeningResult.reason,
+          details: listeningResult.details
+        });
+      }
+      
+      // Create or update the weekly study plan for Listening with default week focus if needed
+      const weekFocus = 'weekFocus' in listeningResult ? listeningResult.weekFocus : "Foundational listening skills for IELTS";
+      
+      const weeklyPlan = await storage.createOrUpdateWeeklyStudyPlan(
+        userId,
+        Number(weekNumber), // Ensure it's a number
+        "Listening",
+        weekFocus,
+        listeningResult
+      );
+      
+      return res.status(200).json({
+        success: true,
+        message: "Listening weekly plan generated successfully",
+        plan: weeklyPlan,
+        currentWeek: Number(weekNumber)
+      });
+    } catch (error) {
+      console.error("[Firebase Auth] Error generating listening weekly plan:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to generate listening weekly plan"
+      });
+    }
+  });
+      
+  // Create a listening weekly study plan from OpenAI (ReAuth version)
+  app.post('/api/weekly-plan/generate-listening', isAuthenticated, async (req: any, res) => {
+    try {
+      // CRITICAL FIX: Extract the stable ID consistently across auth methods
+      const userId = req.user.id || (req.user.claims ? req.user.claims.sub : null);
+      
+      if (!userId) {
+        return res.status(401).json({
+          success: false,
+          message: "Unable to determine user ID"
+        });
+      }
+      
+      console.log(`[ReAuth] Generating listening plan for user ${userId}`);
+      let { weekNumber } = req.body;
+      
+      // If weekNumber isn't provided, calculate it using getCurrentWeekNumber
+      if (!weekNumber) {
+        try {
+          // Get user data for calculating current week
+          const userWeekData2 = await storage.getUser(userId);
+          
+          if (userWeekData2) {
+            // Import and use the getCurrentWeekNumber utility
+            const { getCurrentWeekNumber } = await import('../client/src/lib/weekUtils');
+            // Convert user to UserProfile format expected by getCurrentWeekNumber
+            const userProfile = {
+              id: userWeekData2.id,
+              createdAt: userWeekData2.createdAt || new Date()
+            };
+            weekNumber = getCurrentWeekNumber(userProfile);
+            console.log(`Calculated current week number: ${weekNumber} for user ${userId}`);
+          } else {
+            weekNumber = 1; // Default to week 1 if we can't determine the user's week
+          }
+        } catch (weekError) {
+          console.error("Error calculating week number:", weekError);
+          weekNumber = 1; // Default to week 1 if calculation fails
+        }
+      }
+      
+      // Validate the week number
+      if (!weekNumber || isNaN(weekNumber)) {
+        return res.status(400).json({
+          success: false,
+          message: "Valid weekNumber is required"
+        });
+      }
+      
+      // Get user onboarding data
+      const userOnboarding2 = await storage.getUser(userId);
+      if (!userOnboarding2) {
+        return res.status(404).json({
+          success: false,
+          message: "User not found"
+        });
+      }
+      
+      // Get existing study plans for user information
+      const existingPlans = await storage.getStudyPlansByUserId(userId);
+      if (!existingPlans || existingPlans.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "No study plan found. Please complete onboarding first."
+        });
+      }
+      
+      // Use the most recent plan for information
+      const latestPlan = existingPlans.sort((a, b) => 
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      )[0];
+      
+      // Make sure targetBandScore is a proper decimal/number value
+      const targetBandScore = typeof latestPlan.targetBandScore === 'string' 
+        ? parseFloat(latestPlan.targetBandScore) 
+        : latestPlan.targetBandScore;
+        
+      // Check if a plan already exists for this user, week, and skill
+      const existingWeeklyPlan = await storage.getWeeklyStudyPlanByWeekAndSkill(
+        userId,
+        Number(weekNumber),
+        "Listening"
+      );
+      
+      // If a plan already exists, return it instead of generating a new one
+      if (existingWeeklyPlan) {
+        console.log(`Found existing weekly plan for Week ${weekNumber} - Listening`);
+        return res.status(200).json({
+          success: true,
+          message: "Retrieved existing weekly plan",
+          plan: existingWeeklyPlan,
+          currentWeek: Number(weekNumber)
+        });
+      }
+      
+      // No existing plan, so generate a new one using OpenAI
+      console.log(`Generating new weekly plan for Week ${weekNumber} - Listening`);
+      
+      // Safe test date handling
+      let parsedTestDate = null;
+      if (latestPlan.testDate) {
+        try {
+          parsedTestDate = new Date(latestPlan.testDate);
+          console.log('Converted weekly plan testDate:', parsedTestDate);
+        } catch (e) {
+          console.error('Failed to parse test date for weekly plan:', e);
+        }
+      }
+        
+      // Include the weekNumber in the study plan generation for week-specific content
+      const listeningResult = await generateListeningStudyPlan({
+        weekNumber: Number(weekNumber), // Pass the week number to the GPT function
+        fullName: latestPlan.fullName,
+        phoneNumber: latestPlan.phoneNumber || "",
+        targetBandScore: targetBandScore,
+        testDate: parsedTestDate,
+        notDecided: latestPlan.notDecided === "true",
+        skillRatings: latestPlan.skillRatings as any,
+        immigrationGoal: latestPlan.immigrationGoal as any,
+        studyPreferences: latestPlan.studyPreferences as any
+      });
+      
+      // Check if the result indicates a failure
+      if ('success' in listeningResult && listeningResult.success === false) {
+        console.error("OpenAI error generating listening plan:", listeningResult.reason);
+        return res.status(500).json({
+          success: false,
+          message: "There was an error generating your listening study plan",
+          error: listeningResult.reason,
+          details: listeningResult.details
+        });
+      }
+      
+      // Create or update the weekly study plan for Listening with default week focus if needed
+      const weekFocus = 'weekFocus' in listeningResult ? listeningResult.weekFocus : "Foundational listening skills for IELTS";
+      
+      const weeklyPlan = await storage.createOrUpdateWeeklyStudyPlan(
+        userId,
+        Number(weekNumber), // Ensure it's a number
+        "Listening",
+        weekFocus,
+        listeningResult
+      );
+      
+      return res.status(200).json({
+        success: true,
+        message: "Listening weekly plan generated successfully",
+        plan: weeklyPlan,
+        currentWeek: Number(weekNumber)
+      });
+    } catch (error) {
+      console.error("Error generating listening weekly plan:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to generate listening weekly plan"
+      });
+    }
+  });
+
+  // Task Progress API Endpoints
+  
+  // Get task progress for a weekly plan (Firebase Auth version)
+  app.get('/api/firebase/task-progress/weekly-plan/:weeklyPlanId', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    try {
+      const userId = req.user.id;
+      const { weeklyPlanId } = req.params;
+      
+      // Fetch the weekly plan first to verify user has access
+      const weeklyPlan = await storage.getWeeklyStudyPlan(weeklyPlanId);
+      
+      if (!weeklyPlan) {
+        return res.status(404).json({
+          success: false,
+          message: "Weekly plan not found"
+        });
+      }
+      
+      // Ensure the user owns this weekly plan
+      if (weeklyPlan.userId !== userId) {
+        return res.status(403).json({
+          success: false,
+          message: "You don't have permission to access this weekly plan"
+        });
+      }
+      
+      // Get all task progress records for this weekly plan
+      const taskProgressRecords = await storage.getTaskProgressByWeeklyPlan(weeklyPlanId);
+      
+      return res.status(200).json({
+        success: true,
+        taskProgress: taskProgressRecords
+      });
+    } catch (error) {
+      console.error('[Routes] Error fetching task progress by weekly plan:', error);
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Failed to fetch task progress',
+        message: error.message
+      });
+    }
+  });
+  
+  // Get a specific task progress by its ID
+  app.get('/api/firebase/task-progress/:progressId', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    try {
+      const userId = req.user.id;
+      const { progressId } = req.params;
+      
+      console.log(`[Routes] Fetching task progress by ID: ${progressId} for user ${userId}`);
+      
+      // Get the task progress record by ID
+      const taskProgress = await storage.getTaskProgress(progressId);
+      
+      // Log detailed debugging info about the task progress fetching attempt
+      console.log('[Routes] Task progress get result:', {
+        taskId: progressId,
+        found: !!taskProgress,
+        userId: userId,
+        taskUserId: taskProgress?.userId,
+        ownerMatch: taskProgress?.userId === userId
+      });
+      
+      // If task progress not found, return 404
+      if (!taskProgress) {
+        return res.status(404).json({
+          success: false,
+          message: "Task progress record not found",
+          detail: `No record found with ID: ${progressId}`
+        });
+      }
+      
+      // Ensure the user owns this task progress record
+      if (taskProgress.userId !== userId) {
+        return res.status(403).json({
+          success: false,
+          message: "You don't have permission to access this task progress record"
+        });
+      }
+      
+      // Return the task progress record - use taskProgress property to match expected client format
+      return res.status(200).json({
+        success: true,
+        taskProgress: taskProgress // Return as single object since this is a single-record endpoint
+      });
+    } catch (error) {
+      console.error('[Routes] Error fetching task progress by ID:', error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch task progress record"
+      });
+    }
+  });
+        message: error.message
+      });
+    }
+  });
+  
+  // Create a task progress record (Firebase Auth version)
+  app.post('/api/firebase/task-progress', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    try {
+      const userId = req.user.id;
+      const { weeklyPlanId, weekNumber, dayNumber, taskTitle } = req.body;
+      
+      // Enhanced debugging logs for task creation
+      console.log('[Task Progress Create] Request received:', {
+        endpoint: '/api/firebase/task-progress',
+        method: 'POST',
+        userId,
+        weeklyPlanId,
+        weekNumber,
+        dayNumber,
+        taskTitle: taskTitle ? (typeof taskTitle === 'string' ? taskTitle.substring(0, 30) + '...' : 'non-string') : 'missing',
+        requiredFieldsPresent: {
+          weeklyPlanId: !!weeklyPlanId,
+          weekNumber: !!weekNumber,
+          dayNumber: dayNumber !== undefined,
+          taskTitle: !!taskTitle
+        },
+        bodyKeys: Object.keys(req.body)
+      });
+      
+      // Validate required fields
+      if (!weeklyPlanId || !weekNumber || dayNumber === undefined || !taskTitle) {
+        console.error('[Task Progress Create] Missing required fields:', {
+          weeklyPlanId: !!weeklyPlanId,
+          weekNumber: !!weekNumber,
+          dayNumber: dayNumber !== undefined,
+          taskTitle: !!taskTitle
+        });
+        
+        return res.status(400).json({
+          success: false,
+          message: "Missing required fields: weeklyPlanId, weekNumber, dayNumber, taskTitle are required"
+        });
+      }
+      
+      // Validate weekly plan exists before creating progress
+      const weeklyPlan = await storage.getWeeklyStudyPlan(weeklyPlanId);
+      
+      if (!weeklyPlan) {
+        console.error('[Task Progress Create] Weekly plan not found:', { weeklyPlanId });
+        return res.status(404).json({
+          success: false,
+          message: "Weekly plan not found. Cannot create task progress for non-existent plan."
+        });
+      }
+      
+      console.log('[Task Progress Create] Weekly plan found:', {
+        id: weeklyPlan.id,
+        userId: weeklyPlan.userId,
+        weekNumber: weeklyPlan.weekNumber,
+        skillFocus: weeklyPlan.skillFocus,
+        userMatch: weeklyPlan.userId === userId
+      });
+      
+      // Check if a task progress record already exists
+      const existingProgress = await storage.getTaskProgressByUserAndTask(
+        userId,
+        weekNumber,
+        dayNumber
+      );
+      
+      if (existingProgress) {
+        console.log('[Task Progress Create] Existing progress found:', {
+          id: existingProgress.id,
+          status: existingProgress.status
+        });
+        
+        return res.status(200).json({
+          success: true,
+          message: "Task progress record already exists",
+          taskProgress: existingProgress
+        });
+      }
+      
+      // Create a new task progress record
+      const taskProgressData = {
+        id: uuidv4(),
+        userId,
+        weeklyPlanId,
+        weekNumber,
+        dayNumber,
+        taskTitle,
+        status: 'not-started',
+        progressData: null,
+        startedAt: null,
+        completedAt: null,
+      };
+      
+      console.log('[Task Progress Create] Creating new task progress:', {
+        id: taskProgressData.id,
+        weeklyPlanId,
+        weekNumber,
+        dayNumber
+      });
+      
+      const createdTaskProgress = await storage.createTaskProgress(taskProgressData);
+      
+      console.log('[Task Progress Create] Task progress created successfully:', {
+        id: createdTaskProgress.id,
+        status: createdTaskProgress.status
+      });
+      
+      return res.status(201).json({
+        success: true,
+        message: "Task progress record created successfully",
+        taskProgress: createdTaskProgress
+      });
+    } catch (error) {
+      console.error("[Task Progress Create] Error creating task progress:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to create task progress record"
+      });
+    }
+  });
+  
+  // Batch initialize task progress records (Firebase Auth version)
+  app.post('/api/firebase/task-progress/batch-initialize', verifyFirebaseAuth, ensureFirebaseUser, batchInitializeTaskProgress);
+  
+  // Update task status (Firebase Auth version)
+  app.patch('/api/firebase/task-progress/:id/status', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    try {
+      const userId = req.user.id;
+      const { id } = req.params;
+      const { status, progressData } = req.body;
+      
+      // Validate status
+      if (!status || !['not-started', 'in-progress', 'completed'].includes(status)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid status. Must be one of: not-started, in-progress, completed"
+        });
+      }
+      
+      // Get the task progress record
+      const taskProgressRecord = await storage.getTaskProgress(id);
+      
+      if (!taskProgressRecord) {
+        return res.status(404).json({
+          success: false,
+          message: "Task progress record not found"
+        });
+      }
+      
+      // Ensure the user owns this task progress record
+      if (taskProgressRecord.userId !== userId) {
+        return res.status(403).json({
+          success: false,
+          message: "You don't have permission to update this task progress record"
+        });
+      }
+      
+      // Update the task progress record
+      const updatedTaskProgress = await storage.updateTaskStatus(id, status, progressData);
+      
+      return res.status(200).json({
+        success: true,
+        message: "Task progress record updated successfully",
+        taskProgress: updatedTaskProgress
+      });
+    } catch (error) {
+      console.error("Error updating task progress:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to update task progress record"
+      });
+    }
+  });
+  
+  // Mark task as in progress (Firebase Auth version)
+  app.patch('/api/firebase/task-progress/:id/start', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    try {
+      const userId = req.user.id;
+      const { id } = req.params;
+      const { progressData } = req.body;
+      
+      // Enhanced debugging logs
+      console.log('[Task Progress Start] Request received:', {
+        endpoint: `/api/firebase/task-progress/${id}/start`,
+        method: 'PATCH',
+        userId,
+        taskId: id,
+        hasProgressData: !!progressData,
+        progressDataType: progressData ? typeof progressData : 'undefined'
+      });
+      
+      // Get the task progress record
+      const taskProgressRecord = await storage.getTaskProgress(id);
+      
+      // Debug log for task record
+      if (taskProgressRecord) {
+        console.log('[Task Progress Start] Task record found:', {
+          id: taskProgressRecord.id,
+          userId: taskProgressRecord.userId,
+          weeklyPlanId: taskProgressRecord.weeklyPlanId,
+          status: taskProgressRecord.status,
+          userMatch: taskProgressRecord.userId === userId
+        });
+      } else {
+        console.error('[Task Progress Start] Task progress record not found:', { id });
+      }
+      
+      if (!taskProgressRecord) {
+        return res.status(404).json({
+          success: false,
+          message: "Task progress record not found"
+        });
+      }
+      
+      // Ensure the user owns this task progress record
+      if (taskProgressRecord.userId !== userId) {
+        console.error('[Task Progress Start] Permission denied:', {
+          recordUserId: taskProgressRecord.userId,
+          requestUserId: userId
+        });
+        
+        return res.status(403).json({
+          success: false,
+          message: "You don't have permission to update this task progress record"
+        });
+      }
+      
+      // Mark the task as in progress
+      console.log('[Task Progress Start] About to mark task as in progress');
+      const updatedTaskProgress = await storage.markTaskAsInProgress(id, progressData);
+      
+      console.log('[Task Progress Start] Task successfully marked as in progress:', {
+        id: updatedTaskProgress.id,
+        status: updatedTaskProgress.status
+      });
+      
+      return res.status(200).json({
+        success: true,
+        message: "Task marked as in progress",
+        taskProgress: updatedTaskProgress
+      });
+    } catch (error) {
+      console.error("[Task Progress Start] Error marking task as in progress:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to mark task as in progress"
+      });
+    }
+  });
+  
+  // Mark task as completed (Firebase Auth version)
+  app.patch('/api/firebase/task-progress/:id/complete', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    try {
+      const userId = req.user.id;
+      const { id } = req.params;
+      
+      // Get the task progress record
+      const taskProgressRecord = await storage.getTaskProgress(id);
+      
+      if (!taskProgressRecord) {
+        return res.status(404).json({
+          success: false,
+          message: "Task progress record not found"
+        });
+      }
+      
+      // Ensure the user owns this task progress record
+      if (taskProgressRecord.userId !== userId) {
+        return res.status(403).json({
+          success: false,
+          message: "You don't have permission to update this task progress record"
+        });
+      }
+      
+      // Mark the task as completed
+      const updatedTaskProgress = await storage.markTaskAsCompleted(id);
+      
+      return res.status(200).json({
+        success: true,
+        message: "Task marked as completed",
+        taskProgress: updatedTaskProgress
+      });
+    } catch (error) {
+      console.error("Error marking task as completed:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to mark task as completed"
+      });
+    }
+  });
+  
+  // -------------- Task Content API Endpoints (for AI-generated content) --------------
+  
+  // Get task content (script, audio, questions, etc.)
+  app.get('/api/firebase/task-content/:id', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    try {
+      const userId = req.user.id;
+      const { id } = req.params;
+      
+      console.log(`[Task Content API] Fetching task content for task ID: ${id}`);
+      
+      // Get the task with all its content
+      const taskWithContent = await storage.getTaskWithContent(id);
+      
+      if (!taskWithContent) {
+        return res.status(404).json({
+          success: false,
+          message: "Task not found"
+        });
+      }
+      
+      // Ensure the user owns this task
+      if (taskWithContent.userId !== userId) {
+        return res.status(403).json({
+          success: false,
+          message: "You don't have permission to access this task content"
+        });
+      }
+      
+      return res.status(200).json({
+        success: true,
+        taskContent: {
+          id: taskWithContent.id,
+          scriptText: taskWithContent.scriptText,
+          audioUrl: taskWithContent.audioUrl,
+          questions: taskWithContent.questions,
+          accent: taskWithContent.accent || 'British',
+          duration: taskWithContent.duration || 0,
+          replayLimit: taskWithContent.replayLimit || 3
+        }
+      });
+    } catch (error) {
+      console.error("[Task Content API] Error fetching task content:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch task content"
+      });
+    }
+  });
+  
+  // Update task content (for admin/authoring purposes)
+  app.patch('/api/firebase/task-content/:id', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    try {
+      const userId = req.user.id;
+      const { id } = req.params;
+      const contentUpdate = req.body;
+      
+      console.log(`[Task Content API] Updating task content for task ID: ${id}`);
+      
+      // First, get the task to check ownership
+      const task = await storage.getTaskProgress(id);
+      
+      if (!task) {
+        return res.status(404).json({
+          success: false,
+          message: "Task not found"
+        });
+      }
+      
+      // Ensure the user owns this task
+      if (task.userId !== userId) {
+        return res.status(403).json({
+          success: false,
+          message: "You don't have permission to update this task content"
+        });
+      }
+      
+      // Update the task content
+      const updatedTask = await storage.updateTaskContent(id, contentUpdate);
+      
+      return res.status(200).json({
+        success: true,
+        message: "Task content updated successfully",
+        taskContent: {
+          id: updatedTask.id,
+          scriptText: updatedTask.scriptText,
+          audioUrl: updatedTask.audioUrl,
+          questions: updatedTask.questions,
+          accent: updatedTask.accent,
+          duration: updatedTask.duration,
+          replayLimit: updatedTask.replayLimit
+        }
+      });
+    } catch (error) {
+      console.error("[Task Content API] Error updating task content:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to update task content"
+      });
+    }
+  });
+
+  const httpServer = createServer(app);
+  return httpServer;
+}
