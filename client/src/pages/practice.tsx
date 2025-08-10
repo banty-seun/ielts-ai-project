@@ -1424,133 +1424,68 @@ const Practice = () => {
     }
   };
 
-  // 5) Practice page gating - only show loader when contentQuery.status === 'pending'
-  const isLoading = taskQ.status === "pending" || progQ.isLoading;
-  
-  // 5) Show error panel only when contentQuery.status === 'error'
-  if (taskQ.status === "error") {
-    const errorMessage = taskQ.error?.message || 'Unknown error';
-    return (
-      <div className="min-h-screen bg-white">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 pt-8">
-          <div className="text-center">
-            <h1 className="text-2xl font-bold text-gray-900 mb-4">Error Loading Content</h1>
-            <p className="text-red-600 mb-4">{errorMessage}</p>
-            <Button onClick={() => taskQ.refetch()} variant="outline">
-              Try Again
-            </Button>
-          </div>
+  // Implement resilient UI gating with exact logic from request  
+  function PracticeBody(props: { status: 'loading' | 'error' | 'success'; error: unknown; content?: TaskContent }) {
+    const { status, error, content } = props;
+
+    if (status === 'loading') {
+      return (
+        <div className="mx-auto max-w-3xl p-6">
+          <h2 className="text-xl font-semibold">Loading Practice Session…</h2>
+          <p className="text-muted-foreground mt-2">Processing task data…</p>
         </div>
-      </div>
-    );
-  }
-  
-  if (isLoading) {
-    return (
-      <div className="max-w-4xl mx-auto px-4 py-8">
-        <div className="mb-6">
-          <WouterLink 
-            href="/dashboard" 
-            className="flex items-center text-sm text-gray-600 hover:text-gray-900"
+      );
+    }
+
+    if (status === 'error') {
+      const msg = (error as Error)?.message || 'Unknown error';
+      return (
+        <div className="mx-auto max-w-3xl p-6">
+          <h2 className="text-xl font-semibold">Error Loading Content</h2>
+          <p className="text-destructive mt-4">{msg}</p>
+          <Button 
+            onClick={() => taskQ.refetch()}
+            variant="outline"
+            className="mt-4 mr-4"
           >
-            <ChevronLeft className="h-4 w-4 mr-1" />
-            Back to Dashboard
-          </WouterLink>
+            Try Again
+          </Button>
+          <Button 
+            onClick={() => window.location.href = '/dashboard'}
+            className="mt-4 bg-black text-white hover:bg-gray-800"
+          >
+            Return to Dashboard
+          </Button>
         </div>
-        
-        <Card>
-          <CardHeader>
-            <CardTitle>Loading Practice Session</CardTitle>
-            <CardDescription>Fetching task data…</CardDescription>
-          </CardHeader>
-          <CardContent className="flex items-center justify-center py-12">
-            <div className="text-center">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-black mx-auto mb-4"></div>
-              <p className="text-sm text-gray-600">Loading your practice content...</p>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    );
+      );
+    }
+
+    // success
+    if (content?._status === 'preparing') {
+      return (
+        <div className="mx-auto max-w-3xl p-6">
+          <h2 className="text-xl font-semibold">Preparing audio…</h2>
+          <p className="text-muted-foreground mt-2">
+            We're generating the audio for this task. This usually takes a few seconds. You can stay on this page.
+          </p>
+        </div>
+      );
+    }
+
+    // ready - return null to continue to main render
+    return null;
   }
 
-  if (taskQ.status === "error") {
-    return (
-      <div className="max-w-4xl mx-auto px-4 py-8">
-        <div className="mb-6">
-          <WouterLink 
-            href="/dashboard" 
-            className="flex items-center text-sm text-gray-600 hover:text-gray-900"
-          >
-            <ChevronLeft className="h-4 w-4 mr-1" />
-            Back to Dashboard
-          </WouterLink>
-        </div>
-        
-        <Card>
-          <CardHeader>
-            <CardTitle>Error Loading Content</CardTitle>
-            <CardDescription>Failed to load task content.</CardDescription>
-          </CardHeader>
-          <CardContent className="text-center py-12">
-            <p className="text-gray-600 mb-4">
-              {(taskQ.error as any)?.message ?? "Failed to load task content."}
-            </p>
-            <Button 
-              onClick={() => taskQ.refetch()}
-              variant="outline"
-              className="mr-4"
-            >
-              Try Again
-            </Button>
-            <Button 
-              onClick={() => window.location.href = '/dashboard'}
-              className="bg-black text-white hover:bg-gray-800"
-            >
-              Return to Dashboard
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  // content is already declared at the top to avoid TDZ
+  // Use the resilient UI gating
+  const practiceBodyResult = PracticeBody({ 
+    status: taskQ.status, 
+    error: taskQ.error, 
+    content: content
+  });
   
-  // Preparing state (script ready but audio not uploaded yet)
-  if (taskQ.status === "success" && content && !content.audioUrl) {
-    return (
-      <div className="max-w-4xl mx-auto px-4 py-8">
-        <div className="mb-6">
-          <WouterLink 
-            href="/dashboard" 
-            className="flex items-center text-sm text-gray-600 hover:text-gray-900"
-          >
-            <ChevronLeft className="h-4 w-4 mr-1" />
-            Back to Dashboard
-          </WouterLink>
-        </div>
-        
-        <Card>
-          <CardHeader>
-            <CardTitle>{content.title ?? originalTitle}</CardTitle>
-            <CardDescription>Preparing audio content…</CardDescription>
-          </CardHeader>
-          <CardContent className="text-center py-12">
-            <div className="animate-pulse rounded-full h-12 w-12 bg-gray-200 mx-auto mb-4"></div>
-            <p className="text-gray-600 mb-4">
-              Preparing audio… This can take up to ~20 seconds. This page will refresh automatically.
-            </p>
-            <Button 
-              onClick={() => taskQ.refetch()}
-              variant="outline"
-            >
-              Refresh Status
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-    );
+  // If PracticeBody returns something, render it instead of continuing
+  if (practiceBodyResult !== null) {
+    return practiceBodyResult;
   }
 
   // Session completion summary view

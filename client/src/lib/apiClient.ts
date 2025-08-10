@@ -334,21 +334,26 @@ export async function getFreshWithAuth(path: string, getToken: () => Promise<str
     throw new Error('getToken is not a function');
   }
   
+  // IMPORTANT: declare before use (prevents implicit global / TDZ bugs)
+  let res: Response;
+  
   try {
-    response = await apiRequestWithFreshToken(path, {}, getToken);
+    res = await apiRequestWithFreshToken(path, {}, getToken);
   } catch (e: any) {
     throw new Error(`apiRequestWithFreshToken failed: ${e?.message ?? 'unknown'}`);
   }
   
-  // Add diagnostic logging before return
-  console.log('[API][getFreshWithAuth][return]', { 
-    url: path, 
-    ok: response.ok, 
-    status: response.status 
+  // Null-safe headers access; never assume headers exists
+  const contentType = res?.headers?.get ? res.headers.get('content-type') : null;
+  console.log('[API][getFreshWithAuth][return]', {
+    url: path,
+    ok: res?.ok,
+    status: res?.status,
+    contentType,
   });
   
-  // CRITICAL: Always return Response object, never undefined/null
-  return response;
+  // Always return a real Response object; never undefined/null
+  return res;
 }
 
 export async function postFreshWithAuth<T>(
