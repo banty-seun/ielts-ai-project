@@ -1,5 +1,5 @@
 import { PollyClient, SynthesizeSpeechCommand, Engine, OutputFormat, VoiceId } from "@aws-sdk/client-polly";
-import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, GetObjectCommand, ObjectCannedACL } from "@aws-sdk/client-s3";
 
 // Initialize AWS clients
 const awsRegion = (process.env.AWS_REGION || "eu-west-2").trim();
@@ -159,13 +159,16 @@ export async function generateAudioFromScript(
       Key: s3Key,
       Body: audioBuffer,
       ContentType: "audio/mpeg",
-      ACL: "public-read"
+      CacheControl: "public, max-age=31536000",
+      ACL: ObjectCannedACL.public_read  // Note: ignored if Object Ownership is "Bucket owner enforced"
     };
 
     console.log(`[Audio Generation] Starting S3 upload:`, {
       bucket: uploadParams.Bucket,
       key: uploadParams.Key,
       contentType: uploadParams.ContentType,
+      cacheControl: uploadParams.CacheControl,
+      acl: uploadParams.ACL,
       bufferSize: audioBuffer.length
     });
 

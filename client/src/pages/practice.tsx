@@ -1341,18 +1341,27 @@ const Practice = () => {
       }
     }
 
-    // Phase B: Robust player pipeline
-    // Ensure we assign src only when changed
+    // Phase B: CORS-optimized player pipeline
     if (el.src !== audioSrc) {
       el.src = audioSrc;
-      el.crossOrigin = 'anonymous';
+      // PHASE 5: Start without crossOrigin to avoid CORS preflight checks
+      // Only set crossOrigin if we need blob fallback
       el.preload = 'auto';
       el.load();
-      console.log('[Audio] src set, waiting canplay');
+      console.log('[Audio] src set (no crossOrigin), waiting canplay');
       try { 
         await waitForCanPlay(el, 7000); 
       } catch (e) { 
-        console.warn('[Audio] waitForCanPlay failed:', e); 
+        console.warn('[Audio] waitForCanPlay failed, trying with crossOrigin:', e);
+        // Fallback: set crossOrigin and retry
+        el.crossOrigin = 'anonymous';
+        el.load();
+        try {
+          await waitForCanPlay(el, 5000);
+          console.log('[Audio] crossOrigin fallback succeeded');
+        } catch (e2) {
+          console.warn('[Audio] crossOrigin fallback also failed:', e2);
+        }
       }
     }
 
