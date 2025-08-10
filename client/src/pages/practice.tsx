@@ -466,6 +466,13 @@ const Practice = () => {
     return finalId;
   }, [progressId, urlTaskId]);
   
+  // Add guard logging at render (use existing getToken from context above)
+  console.log('[Practice][useTaskContent guards at render]', { 
+    taskContentId, 
+    authLoading, 
+    isGetTokenValid: typeof getToken === 'function' 
+  });
+
   const { 
     data: taskContent,
     isLoading: isTaskContentLoading,
