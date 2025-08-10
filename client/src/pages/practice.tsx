@@ -466,23 +466,28 @@ const Practice = () => {
     return finalId;
   }, [progressId, urlTaskId]);
   
-  // Add guard logging at render (use existing getToken from context above)
-  console.log('[Practice][useTaskContent guards at render]', { 
-    taskContentId, 
-    authLoading, 
-    isGetTokenValid: typeof getToken === 'function',
-    hasUser: !!currentUser,
-  });
-
+  // Call hooks unconditionally
   const taskQ = useTaskContent(taskContentId);
-  const progQ = useTaskProgress(taskContentId);
+  const progQ = useTaskProgress({ progressId: progressId || '' });
+
+  // TDZ FIX: Move critical variables to top after hooks are called
+  console.log('[Practice][TDZ guard]', {
+    taskQStatus: taskQ.status,
+    hasTaskQData: !!taskQ.data,
+    progQLoading: progQ.isLoading,
+    progQError: !!progQ.error
+  });
+  
+  // CRITICAL: Declare content here to avoid TDZ in functions below
+  const content = taskQ.data ?? null;
   
   console.log("[Practice][query states]", {
     taskId: taskContentId,
     taskStatus: taskQ.status,
     taskHasData: !!taskQ.data,
-    progStatus: progQ.status,
-    progHasData: !!progQ.data
+    progLoading: progQ.isLoading,
+    progError: !!progQ.error,
+    hasContent: !!content
   });
 
   // Add lightweight polling for audioUrl generation (max 6 tries, 10s each)
@@ -1279,12 +1284,12 @@ const Practice = () => {
           } else {
             // No replays left or test submitted
             // Use session storage to prevent duplicate toasts
-            const replayLimitKey = `replay-limit-shown-${taskContent?.id || 'unknown'}`;
+            const replayLimitKey = `replay-limit-shown-${content?.id || 'unknown'}`;
             
             if (!sessionStorage.getItem(replayLimitKey)) {
               toast({
                 title: "Replay limit reached",
-                description: `You can only replay this audio ${taskContent?.replayLimit || 2} times.`,
+                description: `You can only replay this audio ${content?.replayLimit || 2} times.`,
                 variant: "destructive"
               });
               
@@ -1308,7 +1313,7 @@ const Practice = () => {
               // Only show toast for actual playback errors, not aborted operations
               if (error.name !== 'AbortError') {
                 // Use session storage to prevent duplicate error toasts
-                const audioErrorKey = `audio-error-${taskContent?.id || 'unknown'}`;
+                const audioErrorKey = `audio-error-${content?.id || 'unknown'}`;
                 
                 if (!sessionStorage.getItem(audioErrorKey)) {
                   toast({
@@ -1327,7 +1332,7 @@ const Practice = () => {
     } else {
       // Fallback to the simulated player if no audio element
       // Track that we showed an error message about missing audio
-      const audioMissingKey = `audio-missing-${taskContent?.id || 'unknown'}`;
+      const audioMissingKey = `audio-missing-${content?.id || 'unknown'}`;
       
       if (!sessionStorage.getItem(audioMissingKey)) {
         console.warn('[Audio Player] No audio element available, using simulated player');
@@ -1409,7 +1414,7 @@ const Practice = () => {
   };
 
   // Proper state handling for endless spinner fix
-  const isLoading = taskQ.status === "loading" || progQ.status === "loading";
+  const isLoading = taskQ.status === "pending" || progQ.isLoading;
   
   if (isLoading) {
     return (
@@ -1481,7 +1486,7 @@ const Practice = () => {
     );
   }
 
-  const content = taskQ.data; // guaranteed non-null on success (see select)
+  // content is already declared at the top to avoid TDZ
   
   // Preparing state (script ready but audio not uploaded yet)
   if (taskQ.status === "success" && content && !content.audioUrl) {
@@ -1694,7 +1699,7 @@ const Practice = () => {
               Audio Player
             </CardTitle>
             <Badge variant="outline" className="bg-gray-100">
-              {taskContent?.accent || 'British'} Accent
+              {content?.accent || 'British'} Accent
             </Badge>
           </div>
           <CardDescription>
@@ -1704,14 +1709,14 @@ const Practice = () => {
         <CardContent>
           <div className="space-y-4">
             {/* Script transcript collapsible section */}
-            {taskContent?.scriptText && (
+            {content?.scriptText && (
               <div className="text-xs text-gray-500 mb-2">
                 <details className="text-sm mb-4">
                   <summary className="cursor-pointer font-medium hover:text-gray-700 transition-colors">
                     Show transcript
                   </summary>
                   <div className="mt-2 p-3 bg-gray-50 rounded text-sm leading-relaxed">
-                    {typeof taskContent.scriptText === 'string' ? taskContent.scriptText : ''}
+                    {typeof content.scriptText === 'string' ? content.scriptText : ''}
                   </div>
                 </details>
               </div>
@@ -1766,10 +1771,10 @@ const Practice = () => {
                     `${replaysRemaining} replay${replaysRemaining !== 1 ? 's' : ''} remaining` : 
                     'No replays remaining'}
                 </span>
-                {taskContent?.accent && (
+                {content?.accent && (
                   <span className="ml-3 inline-flex items-center">
                     <span className="w-2 h-2 rounded-full bg-gray-300 mr-1"></span>
-                    {typeof taskContent.accent === 'string' ? taskContent.accent : 'British'} accent
+                    {typeof content.accent === 'string' ? content.accent : 'British'} accent
                   </span>
                 )}
               </div>
