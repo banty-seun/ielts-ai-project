@@ -21,6 +21,42 @@ import { createComponentTracker } from '@/lib/firestoreTracker';
 import { useFirebaseAuthContext } from '@/contexts/FirebaseAuthContext';
 import { QuotaErrorAlert } from '@/components/QuotaErrorAlert';
 
+// Audio pipeline helpers for robust playback
+function waitForCanPlay(el: HTMLAudioElement, timeoutMs = 7000) {
+  return new Promise<void>((resolve, reject) => {
+    const onCanPlay = () => cleanup(resolve);
+    const onError = (e: any) => cleanup(() => reject(e));
+    const to = setTimeout(() => cleanup(() => reject(new Error('canplay timeout'))), timeoutMs);
+    function cleanup(cb: Function) {
+      el.removeEventListener('canplay', onCanPlay);
+      el.removeEventListener('canplaythrough', onCanPlay);
+      el.removeEventListener('error', onError);
+      clearTimeout(to);
+      cb();
+    }
+    el.addEventListener('canplay', onCanPlay, { once: true });
+    el.addEventListener('canplaythrough', onCanPlay, { once: true });
+    el.addEventListener('error', onError, { once: true });
+  });
+}
+
+async function resolveBlobSrcIfNeeded(url: string): Promise<string> {
+  try {
+    const resp = await fetch(url, { mode: 'cors' });
+    if (!resp.ok) throw new Error('fetch audio failed: ' + resp.status);
+    const ct = resp.headers.get?.('content-type');
+    console.log('[Audio] fetched for blob, content-type:', ct);
+    const blob = await resp.blob();
+    if (!ct || !ct.includes('audio')) {
+      console.warn('[Audio] non-audio content-type, attempting anyway');
+    }
+    return URL.createObjectURL(blob);
+  } catch (e) {
+    console.warn('[Audio] blob resolution failed, using original URL', e);
+    return url;
+  }
+}
+
 // Mock data for the initial implementation
 // These will be replaced with actual data from the API
 interface QuestionOption {
@@ -644,6 +680,7 @@ const Practice = () => {
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(80);
   const [replaysRemaining, setReplaysRemaining] = useState(2); // For the replay limiter feature
+  const [audioSrc, setAudioSrc] = useState<string | null>(null); // Resolved audio source for robust playback
   const audioRef = useRef<HTMLAudioElement | null>(null); // Reference to the audio element
   const prevVolumeRef = useRef<number>(0); // Reference to track previous volume value
 
@@ -668,6 +705,24 @@ const Practice = () => {
   const audioUrl = useMemo(() => {
     return taskQ.data?.audioUrl || '';
   }, [taskQ.data?.audioUrl]);
+
+  // Resolve audio source with blob fallback for CORS-friendly playback
+  useEffect(() => {
+    let toRevoke: string | null = null;
+    (async () => {
+      if (!content?.audioUrl) { 
+        setAudioSrc(null); 
+        return; 
+      }
+      console.log('[Audio] content.audioUrl:', content.audioUrl);
+      const src = await resolveBlobSrcIfNeeded(content.audioUrl);
+      setAudioSrc(src);
+      if (src.startsWith('blob:')) toRevoke = src;
+    })();
+    return () => { 
+      if (toRevoke) URL.revokeObjectURL(toRevoke); 
+    };
+  }, [content?.audioUrl]);
 
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [multiGapAnswers, setMultiGapAnswers] = useState<Record<string, Record<string, string>>>({});
@@ -1239,186 +1294,138 @@ const Practice = () => {
     };
   }, []);
 
-  // Handle audio replay with limited replays - optimized with value comparison guards
-  const handlePlayPause = () => {
-    // Cache reference to audio element to avoid repeated property access
-    const audioEl = audioRef.current;
-    
-    // If we have a real audio element, use it
-    if (audioEl) {
-      if (isPlaying) {
-        // Pause the audio
-        audioEl.pause();
-        
-        // Only update state if it's actually changing
-        if (isPlaying) {
-          setIsPlaying(false);
-          console.log('[Audio Player] Paused audio playback');
-        }
-      } else {
-        // Play the audio
-        // If audio is finished, restart it
-        if (currentTime >= duration) {
-          if (replaysRemaining > 0 && !isSubmitted) {
-            // Reset audio position - use stored reference
-            audioEl.currentTime = 0;
-            
-            // Only update time state if it's not already 0
-            if (currentTime !== 0) {
-              setCurrentTime(0);
-            }
+  // Robust audio playback with diagnostic probes and CORS fallback
+  const handlePlayPause = async () => {
+    const el = audioRef.current;
+    if (!el) { 
+      console.warn('[Audio] no audio element'); 
+      return; 
+    }
+    if (!audioSrc) { 
+      console.warn('[Audio] no audio src yet'); 
+      return; 
+    }
 
-            // Decrement the replay count - use functional update to ensure we have latest state
-            setReplaysRemaining(prev => prev - 1);
-            console.log('[Audio Player] Starting replay, remaining:', replaysRemaining - 1);
+    if (isPlaying) {
+      // Pause the audio
+      el.pause();
+      setIsPlaying(false);
+      console.log('[Audio] paused');
+      return;
+    }
 
-            // Play the audio with enhanced error handling
-            audioEl.play()
-              .then(() => {
-                // Only update if state is actually changing
-                if (!isPlaying) {
-                  setIsPlaying(true);
-                }
-              })
-              .catch(error => {
-                console.error('[Audio Player] Error playing audio:', error);
-                
-                // Only show toast for actual playback errors, not aborted operations
-                if (error.name !== 'AbortError') {
-                  toast({
-                    title: "Audio playback error",
-                    description: "There was an issue playing the audio. Please try again.",
-                    variant: "destructive"
-                  });
-                }
-              });
-          } else {
-            // No replays left or test submitted
-            // Use session storage to prevent duplicate toasts
-            const replayLimitKey = `replay-limit-shown-${content?.id || 'unknown'}`;
-            
-            if (!sessionStorage.getItem(replayLimitKey)) {
-              toast({
-                title: "Replay limit reached",
-                description: `You can only replay this audio ${content?.replayLimit || 2} times.`,
-                variant: "destructive"
-              });
-              
-              // Mark that we've shown this message
-              sessionStorage.setItem(replayLimitKey, 'true');
-            }
-          }
-        } else {
-          // Continue playing from current position - use cached reference
-          audioEl.play()
-            .then(() => {
-              // Only update if state is actually changing
-              if (!isPlaying) {
-                setIsPlaying(true);
-                console.log('[Audio Player] Resumed audio playback');
-              }
-            })
-            .catch(error => {
-              console.error('[Audio Player] Error playing audio:', error);
-              
-              // Only show toast for actual playback errors, not aborted operations
-              if (error.name !== 'AbortError') {
-                // Use session storage to prevent duplicate error toasts
-                const audioErrorKey = `audio-error-${content?.id || 'unknown'}`;
-                
-                if (!sessionStorage.getItem(audioErrorKey)) {
-                  toast({
-                    title: "Audio playback error",
-                    description: "There was an issue playing the audio. Please try again.",
-                    variant: "destructive"
-                  });
-                  
-                  // Mark that we've shown this error
-                  sessionStorage.setItem(audioErrorKey, 'true');
-                }
-              }
-            });
-        }
-      }
-    } else {
-      // Fallback to the simulated player if no audio element
-      // Track that we showed an error message about missing audio
-      const audioMissingKey = `audio-missing-${content?.id || 'unknown'}`;
-      
-      if (!sessionStorage.getItem(audioMissingKey)) {
-        console.warn('[Audio Player] No audio element available, using simulated player');
-        toast({
-          title: "Audio Not Available",
-          description: "The audio for this exercise could not be loaded. Using simulated playback instead.",
-          variant: "default"
+    // Phase A: Diagnostic probes before playing
+    if (content?.audioUrl) {
+      // HEAD probe (may fail on some S3 setups)
+      const head = await fetch(content.audioUrl, { method: 'HEAD', mode: 'cors' }).catch(e => e);
+      console.log('[Audio][HEAD]', head?.status, head?.headers && {
+        'content-type': head.headers.get?.('content-type'),
+        'accept-ranges': head.headers.get?.('accept-ranges'),
+        'content-length': head.headers.get?.('content-length'),
+        'access-control-allow-origin': head.headers.get?.('access-control-allow-origin'),
+      });
+
+      // If HEAD fails, do a tiny Range GET
+      if (!head?.ok) {
+        const probe = await fetch(content.audioUrl, { 
+          method: 'GET', 
+          headers: { Range: 'bytes=0-1' }, 
+          mode: 'cors' 
+        }).catch(e => e);
+        console.log('[Audio][RANGE PROBE]', probe?.status, probe?.headers && {
+          'content-type': probe.headers.get?.('content-type'),
+          'accept-ranges': probe.headers.get?.('accept-ranges'),
+          'content-length': probe.headers.get?.('content-length'),
+          'access-control-allow-origin': probe.headers.get?.('access-control-allow-origin'),
         });
-        
-        // Mark that we've shown this message
-        sessionStorage.setItem(audioMissingKey, 'true');
       }
-      
-      if (currentTime >= duration) {
-        if (replaysRemaining > 0 && !isSubmitted) {
-          // Only update if changing from non-zero
-          if (currentTime !== 0) {
-            setCurrentTime(0);
-          }
-          
-          // Only update if it's changing
-          if (!isPlaying) {
-            setIsPlaying(true);
-          }
-          
-          // Use functional update for replays
-          setReplaysRemaining(prev => prev - 1);
-          console.log('[Audio Player] Simulated replay, remaining:', replaysRemaining - 1);
+    }
+
+    // Phase B: Robust player pipeline
+    // Ensure we assign src only when changed
+    if (el.src !== audioSrc) {
+      el.src = audioSrc;
+      el.crossOrigin = 'anonymous';
+      el.preload = 'auto';
+      el.load();
+      console.log('[Audio] src set, waiting canplay');
+      try { 
+        await waitForCanPlay(el, 7000); 
+      } catch (e) { 
+        console.warn('[Audio] waitForCanPlay failed:', e); 
+      }
+    }
+
+    // If audio is finished, restart it
+    if (currentTime >= duration) {
+      if (replaysRemaining > 0 && !isSubmitted) {
+        // Reset audio position
+        el.currentTime = 0;
+        if (currentTime !== 0) {
+          setCurrentTime(0);
         }
+        // Decrement the replay count - use functional update to ensure we have latest state
+        setReplaysRemaining(prev => prev - 1);
       } else {
-        // Toggle play/pause if still playing - only update if changing
-        setIsPlaying(current => !current);
-        console.log('[Audio Player] Toggled simulated playback to:', !isPlaying);
+        // No replays left
+        const replayLimitKey = `replay-limit-shown-${content?.id || 'unknown'}`;
+        if (!sessionStorage.getItem(replayLimitKey)) {
+          toast({
+            title: "Replay limit reached",
+            description: `You can only replay this audio ${content?.replayLimit || 2} times.`,
+            variant: "destructive"
+          });
+          sessionStorage.setItem(replayLimitKey, 'true');
+        }
+        return;
+      }
+    }
+
+    // Attempt to play with robust error handling
+    try {
+      await el.play();
+      console.log('[Audio] playing');
+      setIsPlaying(true);
+    } catch (err) {
+      console.error('[Audio] play() failed, retrying shortly:', err);
+      await new Promise(r => setTimeout(r, 150));
+      try { 
+        await el.play(); 
+        console.log('[Audio] retry successful');
+        setIsPlaying(true);
+      } catch (err2) { 
+        console.error('[Audio] retry play() failed:', err2);
+        console.log('readyState', el.readyState, 'error', el.error);
       }
     }
   };
 
-  // Handle audio reset with replay limit - optimized with value comparison guards
+  // Handle audio reset with replay limit
   const handleResetAudio = () => {
     if (replaysRemaining > 0 && !isSubmitted) {
-      // Cache reference to audio element
-      const audioEl = audioRef.current;
-      
-      if (audioEl) {
-        // Reset audio position
-        audioEl.currentTime = 0;
-        console.log('[Audio Player] Reset audio position to beginning');
+      const el = audioRef.current;
+      if (el) {
+        el.currentTime = 0;
+        console.log('[Audio] Reset to beginning');
       }
       
-      // Only update time if it's not already 0
       if (currentTime !== 0) {
         setCurrentTime(0);
       }
       
-      // Only update playing state if it's currently playing
       if (isPlaying) {
         setIsPlaying(false);
       }
       
-      // Use functional update for replays
       setReplaysRemaining(prev => prev - 1);
-      console.log('[Audio Player] Reset audio, remaining replays:', replaysRemaining - 1);
     } else {
-      // No replays left or test submitted
-      // Use session storage to prevent duplicate toasts
       const replayLimitKey = `replay-limit-reset-${content?.id || 'unknown'}`;
-      
       if (!sessionStorage.getItem(replayLimitKey)) {
         toast({
           title: "Replay limit reached",
           description: `You can only replay this audio ${content?.replayLimit || 2} times.`,
           variant: "destructive"
         });
-        
-        // Mark that we've shown this message
         sessionStorage.setItem(replayLimitKey, 'true');
       }
     }

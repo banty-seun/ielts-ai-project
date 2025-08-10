@@ -153,12 +153,13 @@ export async function generateAudioFromScript(
     // Generate S3 key with organized path structure
     const s3Key = `audio/${userId}/week-${weekNumber}/task-${taskId}-${accent.toLowerCase()}.mp3`;
     
-    // Upload audio to S3
+    // Upload audio to S3 with proper content type and public access
     const uploadParams = {
       Bucket: process.env.AWS_S3_BUCKET,
       Key: s3Key,
       Body: audioBuffer,
       ContentType: "audio/mpeg",
+      ACL: "public-read"
     };
 
     console.log(`[Audio Generation] Starting S3 upload:`, {
