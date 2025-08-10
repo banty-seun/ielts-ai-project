@@ -430,7 +430,7 @@ const Practice = () => {
   const { toast } = useToast();
 
   // Firebase auth context for token management
-  const { getToken, currentUser } = useFirebaseAuthContext();
+  const { getToken, currentUser, loading: authLoading } = useFirebaseAuthContext();
   const [hasQuotaError, setHasQuotaError] = useState(false);
 
   // Add state to control when to fetch content
@@ -470,7 +470,8 @@ const Practice = () => {
   console.log('[Practice][useTaskContent guards at render]', { 
     taskContentId, 
     authLoading, 
-    isGetTokenValid: typeof getToken === 'function' 
+    isGetTokenValid: typeof getToken === 'function',
+    hasUser: !!currentUser,
   });
 
   const { 
