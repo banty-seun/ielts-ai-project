@@ -92,12 +92,21 @@ export function useTaskContent(options: { taskId: string } | string | null | und
       
       // 2) Instrument client fetch - log before parsing
       console.log('[UTC][start]', { endpoint, taskId });
-      const res = await getFreshWithAuth(endpoint, getToken) as Response;
-      console.log('[UTC][res]', { 
-        ok: res.ok, 
-        status: res.status, 
-        statusText: res.statusText, 
-        ct: res.headers.get('content-type') 
+      const res = await getFreshWithAuth(endpoint, getToken);
+      
+      // Guard against undefined response
+      if (!res) {
+        console.error('[UTC] getFreshWithAuth returned undefined/null', { endpoint });
+        throw new Error('getFreshWithAuth returned undefined');
+      }
+      
+      const ct = res.headers?.get ? res.headers.get('content-type') : null;
+      console.log('[UTC][res]', {
+        hasRes: !!res,
+        ok: res.ok,
+        status: res.status,
+        statusText: res.statusText,
+        ct
       });
       
       const raw = await res.clone().text();
@@ -110,7 +119,7 @@ export function useTaskContent(options: { taskId: string } | string | null | und
       if (!res.ok) {
         let errorMessage = res.statusText || 'Unknown error';
         try {
-          const errorData = await res.json();
+          const errorData = await res.clone().json();
           errorMessage = errorData?.message || JSON.stringify(errorData);
         } catch {}
         // 2) Include status in thrown message for better debugging

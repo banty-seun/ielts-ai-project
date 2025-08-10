@@ -152,9 +152,14 @@ export async function apiRequestWithFreshToken(
 
 // Safe JSON parsing that checks content type
 async function safeParseJson<T>(response: Response): Promise<T> {
+  // Guard against undefined response
+  if (!response) {
+    throw new Error('Response is undefined');
+  }
+  
   try {
-    // Check if the content type is JSON
-    const contentType = response.headers.get('content-type');
+    // Check if the content type is JSON - guard headers access
+    const contentType = response.headers?.get ? response.headers.get('content-type') : null;
     console.log(`[API Client] safeParseJson called for ${response.url}, content-type: ${contentType}`);
     
     if (contentType && contentType.includes('application/json')) {
@@ -200,7 +205,7 @@ export async function getWithAuth<T>(path: string): Promise<T> {
   if (!response.ok) {
     // For error responses, try to safely parse JSON error message if available
     try {
-      const contentType = response.headers.get('content-type');
+      const contentType = response.headers?.get ? response.headers.get('content-type') : null;
       if (contentType && contentType.includes('application/json')) {
         const errorData = await response.json();
         throw new Error(`API error: ${response.status} ${response.statusText} - ${errorData.message || JSON.stringify(errorData)}`);
@@ -234,7 +239,7 @@ export async function postWithAuth<T>(path: string, data: any): Promise<T> {
   if (!response.ok) {
     // For error responses, try to safely parse JSON error message if available
     try {
-      const contentType = response.headers.get('content-type');
+      const contentType = response.headers?.get ? response.headers.get('content-type') : null;
       if (contentType && contentType.includes('application/json')) {
         const errorData = await response.json();
         throw new Error(`API error: ${response.status} ${response.statusText} - ${errorData.message || JSON.stringify(errorData)}`);
@@ -268,7 +273,7 @@ export async function putWithAuth<T>(path: string, data: any): Promise<T> {
   if (!response.ok) {
     // For error responses, try to safely parse JSON error message if available
     try {
-      const contentType = response.headers.get('content-type');
+      const contentType = response.headers?.get ? response.headers.get('content-type') : null;
       if (contentType && contentType.includes('application/json')) {
         const errorData = await response.json();
         throw new Error(`API error: ${response.status} ${response.statusText} - ${errorData.message || JSON.stringify(errorData)}`);
@@ -298,7 +303,7 @@ export async function deleteWithAuth<T>(path: string): Promise<T> {
   if (!response.ok) {
     // For error responses, try to safely parse JSON error message if available
     try {
-      const contentType = response.headers.get('content-type');
+      const contentType = response.headers?.get ? response.headers.get('content-type') : null;
       if (contentType && contentType.includes('application/json')) {
         const errorData = await response.json();
         throw new Error(`API error: ${response.status} ${response.statusText} - ${errorData.message || JSON.stringify(errorData)}`);
@@ -322,87 +327,28 @@ export async function deleteWithAuth<T>(path: string): Promise<T> {
 // These functions are used directly with getToken from FirebaseAuthContext
 // Example usage:
 // const { getToken } = useFirebaseAuthContext();
-// const data = await getFreshWithAuth('/api/data', getToken);
-
-export async function getFreshWithAuth<T>(path: string, getToken: () => Promise<string | null>): Promise<T> {
-  try {
-    const response = await apiRequestWithFreshToken(path, {}, getToken);
-    
-    if (!response.ok) {
-      // For error responses, try to safely parse JSON error message if available
-      try {
-        const contentType = response.headers.get('content-type');
-        if (contentType && contentType.includes('application/json')) {
-          const errorData = await response.json();
-          const status = response.status;
-          const message = errorData.message || response.statusText || 'Unknown error';
-          // Create a consistently formatted error message: "status: message"
-          const errorMessage = `${status}: ${message}`;
-          const err = new Error(errorMessage);
-          (err as any).status = status;
-          throw err;
-        } else {
-          const errorText = await response.text();
-          console.error(`[API Client] Non-JSON error response from ${path}:`, {
-            status: response.status,
-            textPreview: errorText.substring(0, 100) + (errorText.length > 100 ? '...' : '')
-          });
-          const status = response.status;
-          const message = response.statusText || 'Unknown error';
-          // Create a consistently formatted error message: "status: message"
-          const errorMessage = `${status}: ${message}`;
-          const err = new Error(errorMessage);
-          (err as any).status = status;
-          throw err;
-        }
-      } catch (parseError) {
-        // If we can't parse the error response, just throw a basic error
-        const status = response.status;
-        const message = response.statusText || 'Unknown error';
-        // Create a consistently formatted error message: "status: message"
-        const errorMessage = `${status}: ${message}`;
-        const err = new Error(errorMessage);
-        (err as any).status = status;
-        throw err;
-      }
-    }
-    
-    return safeParseJson<T>(response);
-  } catch (error: any) {
-    // Log the original error for debugging
-    console.error(`[API Client] Error caught for ${path}:`, error);
-    console.dir(error, { depth: 3 });
-    
-    // Check if error is already formatted (has status property)
-    if (error.status !== undefined) {
-      console.log(`[API Client] Error already has status ${error.status}, rethrowing`);
-      // Make sure the message follows our format convention: "status: message"
-      if (!error.message.startsWith(`${error.status}:`)) {
-        const originalStatus = error.status;
-        const newMessage = `${originalStatus}: ${error.message}`;
-        const newError = new Error(newMessage);
-        (newError as any).status = originalStatus;
-        throw newError;
-      }
-      throw error;
-    }
-    
-    // This is a network-level error (no response, no status)
-    // Common error types: TypeError for "Failed to fetch"
-    console.log(`[API Client] Network error detected for ${path}:`, error.message);
-    
-    // Create a new error with status 0 and preserve the original message
-    const status = 0;
-    const message = error.message || 'Network Error';
-    
-    // Create a consistently formatted error message: "0: message"
-    const errorMessage = `${status}: ${message}`;
-    const err = new Error(errorMessage);
-    (err as any).status = status;
-    
-    console.log(`[API Client] Formatted network error: ${errorMessage}`);
-    throw err;
+// IMPORTANT: This function now returns Response, not parsed JSON
+export async function getFreshWithAuth(path: string, getToken: () => Promise<string | null>): Promise<Response> {
+  // Validate getToken parameter
+  if (typeof getToken !== 'function') {
+    throw new Error('getToken is not a function');
   }
+  
+  try {
+    response = await apiRequestWithFreshToken(path, {}, getToken);
+  } catch (e: any) {
+    throw new Error(`apiRequestWithFreshToken failed: ${e?.message ?? 'unknown'}`);
+  }
+  
+  // Add diagnostic logging before return
+  console.log('[API][getFreshWithAuth][return]', { 
+    url: path, 
+    ok: response.ok, 
+    status: response.status 
+  });
+  
+  // CRITICAL: Always return Response object, never undefined/null
+  return response;
 }
 
 export async function postFreshWithAuth<T>(
@@ -501,7 +447,7 @@ export async function patchFreshWithAuth<T>(
   if (!response.ok) {
     // For error responses, try to safely parse JSON error message if available
     try {
-      const contentType = response.headers.get('content-type');
+      const contentType = response.headers?.get ? response.headers.get('content-type') : null;
       if (contentType && contentType.includes('application/json')) {
         const errorData = await response.json();
         throw new Error(`API error: ${response.status} ${response.statusText} - ${errorData.message || JSON.stringify(errorData)}`);
