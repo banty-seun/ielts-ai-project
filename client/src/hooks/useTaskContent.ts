@@ -6,12 +6,14 @@ import { getFreshWithAuth } from '@/lib/apiClient';
 // Define TaskContent type to match what Practice component expects after transformation
 export type TaskContent = {
   id: string;
+  title?: string | null;
   scriptText: string | null;
   audioUrl: string | null;
   questions: any[];
   accent: string;
   duration: number;
   replayLimit: number;
+  _status?: "empty" | "readyish";
 };
 
 // Define the raw API response type
@@ -69,7 +71,7 @@ export function useTaskContent(options: { taskId: string } | string | null | und
     hasFetched: hasFetchedRef.current,
   });
 
-  return useQuery<TaskContent>({
+  const query = useQuery<TaskContent>({
     queryKey: ['/api/firebase/task-content', taskId],
     enabled: Boolean(taskId && taskId !== 'mock-id' && taskId !== 'undefined' && !authLoading && isGetTokenValid),
     refetchOnWindowFocus: false,
@@ -78,9 +80,9 @@ export function useTaskContent(options: { taskId: string } | string | null | und
     staleTime: 0, // force a real fetch the first time
     retry: 0,
     queryFn: async (): Promise<TaskContent> => {
+      console.log('[useTaskContent] QUERYFN START for', taskId);
+      
       if (!taskId) throw new Error('Task ID is required');
-
-      console.log('[useTaskContent] NETWORK FETCH start', { taskId });
 
       if (typeof getToken !== 'function') {
         throw new Error('Authentication not initialized - getToken is not available');
@@ -110,41 +112,47 @@ export function useTaskContent(options: { taskId: string } | string | null | und
       return data;
     },
 
-    select: (data: any): TaskContent => {
-      // Extra guard logs
-      console.log('[useTaskContent][select] raw:', data);
-
-      if (!data?.taskContent?.id) {
-        console.warn('[useTaskContent][select] invalid taskContent shape', {
-          hasTaskContent: !!data?.taskContent,
-          id: data?.taskContent?.id,
-        });
-        // Return a fallback TaskContent instead of null
+    select: (data: any) => {
+      if (!data || data.success !== true) throw new Error("API success=false or empty");
+      const c = data.taskContent;
+      if (!c || !c.id) {
         return {
-          id: 'fallback',
+          id: String(taskId),
+          title: data.title ?? null,
           scriptText: null,
           audioUrl: null,
           questions: [],
-          accent: 'British',
+          accent: "British",
           duration: 0,
-          replayLimit: 3
+          replayLimit: 3,
+          _status: "empty"
         };
       }
-
-      const result = {
-        id: data.taskContent.id,
-        title: data.taskContent.title ?? null,
-        description: data.taskContent.description ?? null,
-        scriptText: data.taskContent.scriptText ?? null,
-        audioUrl: data.taskContent.audioUrl ?? null,   // allow null; UI shows "generating..."
-        questions: Array.isArray(data.taskContent.questions) ? data.taskContent.questions : [],
-        accent: data.taskContent.accent ?? 'British',
-        duration: typeof data.taskContent.duration === 'number' ? data.taskContent.duration : 0,
-        replayLimit: typeof data.taskContent.replayLimit === 'number' ? data.taskContent.replayLimit : 3,
+      return {
+        id: c.id,
+        title: c.taskTitle ?? data.title ?? null,
+        scriptText: c.scriptText ?? null,
+        audioUrl: c.audioUrl ?? null,
+        questions: Array.isArray(c.questions) ? c.questions : [],
+        accent: c.accent ?? "British",
+        duration: typeof c.duration === "number" ? c.duration : 0,
+        replayLimit: typeof c.replayLimit === "number" ? c.replayLimit : 3,
+        _status: "readyish"
       };
-
-      console.log('[useTaskContent][select] transformed:', result);
-      return result;
-    },
+    }
   });
+
+  // Log live query state
+  console.log("[useTaskContent][state]", {
+    key: query.queryKey,
+    status: query.status,
+    isLoading: query.isLoading,
+    isFetching: query.isFetching,
+    isSuccess: query.isSuccess,
+    isError: query.isError,
+    hasData: !!query.data,
+    error: (query.error as any)?.message
+  });
+
+  return query;
 }

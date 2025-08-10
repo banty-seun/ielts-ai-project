@@ -474,29 +474,27 @@ const Practice = () => {
     hasUser: !!currentUser,
   });
 
-  const { 
-    data: taskContent,
-    isLoading: isTaskContentLoading,
-    error: taskContentError 
-  } = useTaskContent(taskContentId);
+  const taskQ = useTaskContent(taskContentId);
+  const progQ = useTaskProgress(taskContentId);
+  
+  console.log("[Practice][query states]", {
+    taskId: taskContentId,
+    taskStatus: taskQ.status,
+    taskHasData: !!taskQ.data,
+    progStatus: progQ.status,
+    progHasData: !!progQ.data
+  });
 
-  // Debug log the actual taskContent structure
+  // Add lightweight polling for audioUrl generation (max 6 tries, 10s each)
   useEffect(() => {
-    if (taskContent) {
-      console.log("TASK CONTENT:", taskContent);
-      console.log("TASK CONTENT STRUCTURE:", {
-        hasId: 'id' in taskContent,
-        id: taskContent.id,
-        hasScriptText: 'scriptText' in taskContent,
-        scriptText: taskContent.scriptText,
-        hasAudioUrl: 'audioUrl' in taskContent,
-        audioUrl: taskContent.audioUrl,
-        hasQuestions: 'questions' in taskContent,
-        questions: taskContent.questions,
-        questionsLength: taskContent.questions?.length || 0
-      });
-    }
-  }, [taskContent]);
+    if (taskQ.status !== "success" || !taskQ.data || taskQ.data.audioUrl) return;
+    let tries = 0;
+    const t = setInterval(() => {
+      if (++tries > 6) return clearInterval(t);
+      taskQ.refetch();
+    }, 10000);
+    return () => clearInterval(t);
+  }, [taskQ.status, taskQ.data?.audioUrl]);
 
   // Track Firebase operations on component mount
   useEffect(() => {
@@ -652,8 +650,8 @@ const Practice = () => {
 
   // Audio URL from task content only
   const audioUrl = useMemo(() => {
-    return taskContent?.audioUrl || '';
-  }, [taskContent]);
+    return taskQ.data?.audioUrl || '';
+  }, [taskQ.data?.audioUrl]);
 
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [multiGapAnswers, setMultiGapAnswers] = useState<Record<string, Record<string, string>>>({});
@@ -814,7 +812,7 @@ const Practice = () => {
     setExerciseTimerActive(false);
     setExerciseTimerExpired(false);
     setCurrentQuestionIndex(0);
-    setReplaysRemaining(taskContent?.replayLimit || 2);
+    setReplaysRemaining(content?.replayLimit || 2);
     setShowCompletionSummary(false);
   };
 
@@ -927,22 +925,22 @@ const Practice = () => {
 
   // Use task content as single source of truth
   useEffect(() => {
-    if (taskContent && !isTaskContentLoading) {
-      console.log('[Practice] Using dynamic content from API:', taskContent);
+    if (content && taskQ.status === "success") {
+      console.log('[Practice] Using dynamic content from API:', content);
 
       // Set the replay limit from the API if available
-      if (taskContent.replayLimit && typeof taskContent.replayLimit === 'number' && !isNaN(taskContent.replayLimit)) {
-        setReplaysRemaining(taskContent.replayLimit);
+      if (content.replayLimit && typeof content.replayLimit === 'number' && !isNaN(content.replayLimit)) {
+        setReplaysRemaining(content.replayLimit);
       }
 
       // Update duration if available
-      if (typeof taskContent.duration === 'number' && !isNaN(taskContent.duration) && duration !== taskContent.duration) {
-        setDuration(taskContent.duration);
+      if (typeof content.duration === 'number' && !isNaN(content.duration) && duration !== content.duration) {
+        setDuration(content.duration);
       }
       
       // Map the API questions format to our component's expected format
-      const newQuestions = Array.isArray(taskContent.questions) && taskContent.questions.length > 0
-        ? taskContent.questions.map((q: {id: string; question: string; options?: any[]; correctAnswer?: string; explanation?: string}) => ({
+      const newQuestions = Array.isArray(content.questions) && content.questions.length > 0
+        ? content.questions.map((q: {id: string; question: string; options?: any[]; correctAnswer?: string; explanation?: string}) => ({
             id: q.id || `question-${Math.random().toString(36).substring(2, 9)}`,
             text: q.question || '',
             type: (Array.isArray(q.options) && q.options.length > 0 ? 'multiple-choice' : 'fill-in-the-gap') as 'multiple-choice' | 'fill-in-the-gap' | 'fill-in-multiple-gaps',
@@ -980,7 +978,7 @@ const Practice = () => {
 
       console.log('[Practice] Updated with dynamic content');
     }
-  }, [taskContent, isTaskContentLoading, duration]);
+  }, [content, taskQ.status, duration]);
 
   // State to track if task progress ID is valid and error handling
   const [progressIdInvalid, setProgressIdInvalid] = useState(
@@ -1114,15 +1112,15 @@ const Practice = () => {
   // Initialize replay limit from API data
   useEffect(() => {
     if (
-      taskContent?.replayLimit && 
-      typeof taskContent.replayLimit === 'number' && 
-      !isNaN(taskContent.replayLimit) &&
-      replaysRemaining !== taskContent.replayLimit
+      content?.replayLimit && 
+      typeof content.replayLimit === 'number' && 
+      !isNaN(content.replayLimit) &&
+      replaysRemaining !== content.replayLimit
     ) {
       // Set the replays remaining from the API data only if changed
-      setReplaysRemaining(taskContent.replayLimit);
+      setReplaysRemaining(content.replayLimit);
     }
-  }, [taskContent, replaysRemaining]);
+  }, [content, replaysRemaining]);
 
   // Create audio element if we have a URL and none exists yet
   useEffect(() => {
@@ -1395,12 +1393,12 @@ const Practice = () => {
     } else {
       // No replays left or test submitted
       // Use session storage to prevent duplicate toasts
-      const replayLimitKey = `replay-limit-reset-${taskContent?.id || 'unknown'}`;
+      const replayLimitKey = `replay-limit-reset-${content?.id || 'unknown'}`;
       
       if (!sessionStorage.getItem(replayLimitKey)) {
         toast({
           title: "Replay limit reached",
-          description: `You can only replay this audio ${taskContent?.replayLimit || 2} times.`,
+          description: `You can only replay this audio ${content?.replayLimit || 2} times.`,
           variant: "destructive"
         });
         
@@ -1410,9 +1408,10 @@ const Practice = () => {
     }
   };
 
-  // Early return for loading state when no content is available
-  // Check for valid taskContent structure instead of questions array
-  if (isTaskContentLoading || !taskContent || !taskContent.id) {
+  // Proper state handling for endless spinner fix
+  const isLoading = taskQ.status === "loading" || progQ.status === "loading";
+  
+  if (isLoading) {
     return (
       <div className="max-w-4xl mx-auto px-4 py-8">
         <div className="mb-6">
@@ -1428,16 +1427,12 @@ const Practice = () => {
         <Card>
           <CardHeader>
             <CardTitle>Loading Practice Session</CardTitle>
-            <CardDescription>
-              {isTaskContentLoading ? "Loading your practice content..." : "Processing task data..."}
-            </CardDescription>
+            <CardDescription>Fetching task data…</CardDescription>
           </CardHeader>
           <CardContent className="flex items-center justify-center py-12">
             <div className="text-center">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-black mx-auto mb-4"></div>
-              <p className="text-sm text-gray-600">
-                {isTaskContentLoading ? "Fetching task content" : "Validating content structure"}
-              </p>
+              <p className="text-sm text-gray-600">Loading your practice content...</p>
             </div>
           </CardContent>
         </Card>
@@ -1445,8 +1440,7 @@ const Practice = () => {
     );
   }
 
-  // Early return for error state when task content failed to load
-  if (!isTaskContentLoading && !taskContent) {
+  if (taskQ.status === "error") {
     return (
       <div className="max-w-4xl mx-auto px-4 py-8">
         <div className="mb-6">
@@ -1461,17 +1455,15 @@ const Practice = () => {
         
         <Card>
           <CardHeader>
-            <CardTitle>Content Not Available</CardTitle>
-            <CardDescription>
-              The practice content could not be loaded. Please try again or return to the dashboard.
-            </CardDescription>
+            <CardTitle>Error Loading Content</CardTitle>
+            <CardDescription>Failed to load task content.</CardDescription>
           </CardHeader>
           <CardContent className="text-center py-12">
             <p className="text-gray-600 mb-4">
-              There was an issue loading the practice content for this task.
+              {(taskQ.error as any)?.message ?? "Failed to load task content."}
             </p>
             <Button 
-              onClick={() => window.location.reload()}
+              onClick={() => taskQ.refetch()}
               variant="outline"
               className="mr-4"
             >
@@ -1482,6 +1474,44 @@ const Practice = () => {
               className="bg-black text-white hover:bg-gray-800"
             >
               Return to Dashboard
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  const content = taskQ.data; // guaranteed non-null on success (see select)
+  
+  // Preparing state (script ready but audio not uploaded yet)
+  if (taskQ.status === "success" && content && !content.audioUrl) {
+    return (
+      <div className="max-w-4xl mx-auto px-4 py-8">
+        <div className="mb-6">
+          <WouterLink 
+            href="/dashboard" 
+            className="flex items-center text-sm text-gray-600 hover:text-gray-900"
+          >
+            <ChevronLeft className="h-4 w-4 mr-1" />
+            Back to Dashboard
+          </WouterLink>
+        </div>
+        
+        <Card>
+          <CardHeader>
+            <CardTitle>{content.title ?? originalTitle}</CardTitle>
+            <CardDescription>Preparing audio content…</CardDescription>
+          </CardHeader>
+          <CardContent className="text-center py-12">
+            <div className="animate-pulse rounded-full h-12 w-12 bg-gray-200 mx-auto mb-4"></div>
+            <p className="text-gray-600 mb-4">
+              Preparing audio… This can take up to ~20 seconds. This page will refresh automatically.
+            </p>
+            <Button 
+              onClick={() => taskQ.refetch()}
+              variant="outline"
+            >
+              Refresh Status
             </Button>
           </CardContent>
         </Card>

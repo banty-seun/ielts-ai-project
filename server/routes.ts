@@ -942,6 +942,7 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
       const userId = req.user.id;
       const { id } = req.params;
       
+      console.log(`[Task Content API] HIT for taskId: ${id}`);
       console.log(`[Task Content API] Fetching task content for task ID: ${id}`);
       
       // Get the task with all its content
@@ -1076,6 +1077,15 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
       } else if (taskWithContent.audioUrl) {
         console.log(`[Pipeline Stage 3] ✅ Audio already exists for task ${id} (${taskWithContent.duration || 'unknown'}s)`);
       }
+      
+      // Log final payload keys before response
+      console.log(`[Task Content API] Final response payload keys for ${id}:`, {
+        hasTaskContent: !!taskWithContent,
+        hasScriptText: !!taskWithContent.scriptText,
+        hasAudioUrl: !!taskWithContent.audioUrl,
+        questionsCount: (taskWithContent.questions || []).length,
+        taskTitle: taskWithContent.taskTitle
+      });
       
       return res.status(200).json({
         success: true,
