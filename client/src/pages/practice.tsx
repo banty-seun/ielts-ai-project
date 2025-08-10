@@ -481,6 +481,17 @@ const Practice = () => {
   // CRITICAL: Declare content here to avoid TDZ in functions below
   const content = taskQ.data ?? null;
   
+  // 1) Log resolved IDs for debugging
+  console.log('[PRACTICE][ids]', { week, day, progressId, urlTaskId, taskContentId });
+
+  // 5) Log React Query states for both hooks
+  console.log('[PRACTICE][states]', { 
+    contentStatus: taskQ.status, 
+    contentError: taskQ.error, 
+    progressStatus: progQ.isLoading ? 'loading' : progQ.error ? 'error' : 'success',
+    progressError: progQ.error 
+  });
+
   console.log("[Practice][query states]", {
     taskId: taskContentId,
     taskStatus: taskQ.status,
@@ -1413,8 +1424,26 @@ const Practice = () => {
     }
   };
 
-  // Proper state handling for endless spinner fix
+  // 5) Practice page gating - only show loader when contentQuery.status === 'pending'
   const isLoading = taskQ.status === "pending" || progQ.isLoading;
+  
+  // 5) Show error panel only when contentQuery.status === 'error'
+  if (taskQ.status === "error") {
+    const errorMessage = taskQ.error?.message || 'Unknown error';
+    return (
+      <div className="min-h-screen bg-white">
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 pt-8">
+          <div className="text-center">
+            <h1 className="text-2xl font-bold text-gray-900 mb-4">Error Loading Content</h1>
+            <p className="text-red-600 mb-4">{errorMessage}</p>
+            <Button onClick={() => taskQ.refetch()} variant="outline">
+              Try Again
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
   
   if (isLoading) {
     return (

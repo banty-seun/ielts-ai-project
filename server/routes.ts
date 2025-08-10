@@ -942,11 +942,19 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
       const userId = req.user.id;
       const { id } = req.params;
       
+      // 4) Server route tracing
+      console.log('[Task Content API] hit', { taskId: id, uid: userId });
       console.log(`[Task Content API] HIT for taskId: ${id}`);
       console.log(`[Task Content API] Fetching task content for task ID: ${id}`);
       
       // Get the task with all its content
       const taskWithContent = await storage.getTaskWithContent(id);
+      
+      // 4) Log found task status
+      console.log('[Task Content API] found task?', !!taskWithContent, 'status', taskWithContent?.status, { 
+        hasScript: !!taskWithContent?.scriptText, 
+        hasAudio: !!taskWithContent?.audioUrl 
+      });
       
       if (!taskWithContent) {
         return res.status(404).json({

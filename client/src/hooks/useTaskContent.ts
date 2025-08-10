@@ -88,22 +88,36 @@ export function useTaskContent(options: { taskId: string } | string | null | und
         throw new Error('Authentication not initialized - getToken is not available');
       }
 
-      const response: Response = await getFreshWithAuth(`/api/firebase/task-content/${taskId}`, getToken);
-
+      const endpoint = `/api/firebase/task-content/${taskId}`;
+      
+      // 2) Instrument client fetch - log before parsing
+      console.log('[UTC][start]', { endpoint, taskId });
+      const res = await getFreshWithAuth(endpoint, getToken) as Response;
+      console.log('[UTC][res]', { 
+        ok: res.ok, 
+        status: res.status, 
+        statusText: res.statusText, 
+        ct: res.headers.get('content-type') 
+      });
+      
+      const raw = await res.clone().text();
+      console.log('[UTC][raw]', raw?.slice(0, 400));
+      
       // Only now mark as fetched (after successful fetch)
       hasFetchedRef.current = true;
-      console.log('[useTaskContent] NETWORK FETCH done; set hasFetchedRef=true', { taskId, status: response.status });
+      console.log('[useTaskContent] NETWORK FETCH done; set hasFetchedRef=true', { taskId, status: res.status });
 
-      if (!response.ok) {
-        let errorMessage = response.statusText || 'Unknown error';
+      if (!res.ok) {
+        let errorMessage = res.statusText || 'Unknown error';
         try {
-          const errorData = await response.json();
+          const errorData = await res.json();
           errorMessage = errorData?.message || JSON.stringify(errorData);
         } catch {}
-        throw new Error(`Failed to fetch task content (${response.status}): ${errorMessage}`);
+        // 2) Include status in thrown message for better debugging
+        throw new Error(`status=${res.status} msg=${errorMessage}`);
       }
 
-      const data = await response.json();
+      const data = await res.json();
       console.log('[useTaskContent] JSON parsed OK', { success: data?.success, hasTaskContent: !!data?.taskContent });
 
       if (!data?.success) throw new Error('API returned success: false');
@@ -144,7 +158,6 @@ export function useTaskContent(options: { taskId: string } | string | null | und
 
   // Log live query state
   console.log("[useTaskContent][state]", {
-    key: query.queryKey,
     status: query.status,
     isLoading: query.isLoading,
     isFetching: query.isFetching,
