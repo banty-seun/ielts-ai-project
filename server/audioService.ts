@@ -1,5 +1,6 @@
 import { PollyClient, SynthesizeSpeechCommand, Engine, OutputFormat, VoiceId } from "@aws-sdk/client-polly";
-import { S3Client, PutObjectCommand, GetObjectCommand, ObjectCannedACL } from "@aws-sdk/client-s3";
+import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
+import { uploadPollyMp3 } from "./audio/uploadPollyMp3";
 
 // Initialize AWS clients
 const awsRegion = (process.env.AWS_REGION || "eu-west-2").trim();
@@ -150,50 +151,13 @@ export async function generateAudioFromScript(
     const wordCount = textToUse.split(/\s+/).length;
     const estimatedDuration = Math.ceil((wordCount / 165) * 60); // Duration in seconds
 
-    // Generate S3 key with organized path structure
-    const s3Key = `audio/${userId}/week-${weekNumber}/task-${taskId}-${accent.toLowerCase()}.mp3`;
-    
-    // Upload audio to S3 with proper content type and public access
-    const uploadParams = {
-      Bucket: process.env.AWS_S3_BUCKET,
-      Key: s3Key,
-      Body: audioBuffer,
-      ContentType: "audio/mpeg",
-      CacheControl: "public, max-age=31536000",
-      ACL: ObjectCannedACL.public_read  // Note: ignored if Object Ownership is "Bucket owner enforced"
-    };
-
-    console.log(`[Audio Generation] Starting S3 upload:`, {
-      bucket: uploadParams.Bucket,
-      key: uploadParams.Key,
-      contentType: uploadParams.ContentType,
-      cacheControl: uploadParams.CacheControl,
-      acl: uploadParams.ACL,
-      bufferSize: audioBuffer.length
-    });
-
-    const uploadCommand = new PutObjectCommand(uploadParams);
-    const uploadResponse = await s3Client.send(uploadCommand);
-    
-    console.log(`[Audio Generation] S3 upload successful:`, {
-      etag: uploadResponse.ETag,
-      requestId: uploadResponse.$metadata?.requestId,
-      httpStatusCode: uploadResponse.$metadata?.httpStatusCode
-    });
-
-    // Generate public S3 URL
-    const audioUrl = `https://${process.env.AWS_S3_BUCKET}.s3.${awsRegion}.amazonaws.com/${s3Key}`;
-
-    // INVESTIGATION: Validate generated URL for silent audio debugging
-    console.log(`[AUDIO INVESTIGATION] Generated S3 URL analysis:`, {
-      fullUrl: audioUrl,
-      urlLength: audioUrl.length,
-      bucketName: process.env.AWS_S3_BUCKET,
-      awsRegion: awsRegion,
-      s3Key: s3Key,
-      isValidHttpsUrl: audioUrl.startsWith('https://'),
-      containsS3Pattern: audioUrl.includes('.s3.'),
-      testDirectlyInBrowser: `Open this URL directly: ${audioUrl}`
+    // Upload to S3 using clean uploadPollyMp3 function
+    const { url: audioUrl } = await uploadPollyMp3({
+      userId,
+      weekNumber,
+      taskId,
+      accent: accent.toLowerCase(),
+      audioBuffer, // Buffer returned from Polly
     });
 
     console.log(`[Audio Generation] Successfully generated audio for task ${taskId}:`, {
