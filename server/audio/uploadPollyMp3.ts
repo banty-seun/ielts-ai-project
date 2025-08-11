@@ -23,6 +23,7 @@ export async function uploadPollyMp3(params: {
     Body: audioBuffer,
     ContentType: "audio/mpeg",
     CacheControl: "public, max-age=86400",
+    ServerSideEncryption: "AES256", // Force SSE-S3 (not KMS)
   }));
 
   // Verify metadata
@@ -31,7 +32,7 @@ export async function uploadPollyMp3(params: {
     console.log("[S3][HEAD OK]", {
       Key,
       contentType: head.ContentType,
-      cacheControl: head.CacheControl,
+      sse: head.ServerSideEncryption,
       acceptRanges: head.AcceptRanges,
       contentLength: head.ContentLength,
     });

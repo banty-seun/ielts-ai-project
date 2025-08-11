@@ -541,9 +541,15 @@ const Practice = () => {
   useEffect(() => {
     if (taskQ.status !== "success" || !taskQ.data || taskQ.data.audioUrl) return;
     let tries = 0;
+    const MAX_TRIES = 6;
     const t = setInterval(() => {
-      if (++tries > 6) return clearInterval(t);
+      tries += 1;
+      console.log(`[POLLING] Refetching task content (attempt ${tries}/${MAX_TRIES})`);
       taskQ.refetch();
+      if (taskQ.data?.audioUrl || tries >= MAX_TRIES) {
+        console.log(`[POLLING] Stopping - audioUrl found: ${!!taskQ.data?.audioUrl}, max tries reached: ${tries >= MAX_TRIES}`);
+        clearInterval(t);
+      }
     }, 10000);
     return () => clearInterval(t);
   }, [taskQ.status, taskQ.data?.audioUrl]);

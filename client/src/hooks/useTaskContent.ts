@@ -28,7 +28,7 @@ export function useTaskContent(taskIdOrOpts: { taskId: string } | string | null 
     refetchOnReconnect: false,
     refetchOnMount: 'always',
     staleTime: 0,
-    retry: 0,
+    retry: 1,
     queryFn: async (): Promise<ApiOk> => {
       if (!taskId) throw new Error('Task ID is required');
 
