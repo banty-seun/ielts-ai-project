@@ -6,6 +6,18 @@ IELTS AI Companion is a full-stack web application designed to help users prepar
 
 ## Recent Changes (January 28, 2025)
 
+**Practice Page Consolidation and Audio Playback Fix (January 28, 2025)**
+- **COMPLETE PRACTICE PAGE REWRITE**: Eliminated all legacy code paths and mock data
+- Removed exerciseSets, currentExercise, complex audio pipelines, blob/objectURL resolution
+- Simplified to single source of truth: useTaskContent and useTaskProgress hooks only
+- Implemented direct S3 audio URLs with simple HTML5 player (no CORS/probe/retry complexity)
+- Added DEBUG toggle for clean logging hygiene (no render-loop spam)
+- Established title precedence: scenario+conversationType → API title → route param → fallback
+- Added proper loading, error, and empty states with no mock fallbacks
+- **S3 AUDIO ACCESS CONFIRMED**: Successfully regenerated failing audio with SSE-S3 encryption
+- Audio URL tested: 200 OK, 626KB MP3, direct browser playback ready
+- Fixed bucket access patterns for seamless audio streaming
+
 **Backend Content Generation Pipeline Completion**
 - Implemented missing question generation functionality using OpenAI GPT-4o Mini
 - Added generateQuestionsFromScript() function that creates 4-5 IELTS listening questions per script
