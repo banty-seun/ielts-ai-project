@@ -189,80 +189,110 @@ const EmptyState = ({ message }: { message: string }) => (
   </div>
 );
 
-// Loading card component
-const LoadingCard = ({ title, subtitle }: { title: string; subtitle: string }) => (
-  <div className="flex flex-col items-center justify-center py-12">
-    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900 mb-4"></div>
-    <h3 className="text-lg font-semibold text-gray-900 mb-2">{title}</h3>
-    <p className="text-gray-600">{subtitle}</p>
-  </div>
-);
-
-// Error card component
-const ErrorCard = ({ 
-  title, 
-  message, 
-  primaryAction,
-  secondaryAction 
-}: { 
-  title: string; 
-  message: string; 
-  primaryAction?: { label: string; onClick?: () => void; to?: string };
-  secondaryAction?: { label: string; to: string };
-}) => (
-  <div className="text-center py-12">
-    <h3 className="text-lg font-semibold text-red-600 mb-2">{title}</h3>
-    <p className="text-gray-600 mb-4">{message}</p>
-    <div className="space-x-4">
-      {primaryAction && (
-        primaryAction.onClick ? (
-          <Button onClick={primaryAction.onClick} variant="outline">
-            {primaryAction.label}
-          </Button>
-        ) : primaryAction.to ? (
-          <WouterLink href={primaryAction.to}>
-            <Button variant="outline">
-              {primaryAction.label}
-            </Button>
-          </WouterLink>
-        ) : null
-      )}
-      {secondaryAction && (
-        <WouterLink href={secondaryAction.to}>
-          <Button variant="ghost">
-            {secondaryAction.label}
-          </Button>
-        </WouterLink>
-      )}
+// Legacy loading component
+const LegacyLoading = () => (
+  <div className="container mx-auto px-4 py-16">
+    <div className="flex flex-col items-center justify-center text-center">
+      <div className="animate-spin h-8 w-8 rounded-full border-2 border-gray-300 border-t-transparent mb-4" />
+      <h2 className="text-lg font-medium">Loading practice session...</h2>
+      <p className="text-sm text-gray-500 mt-1">Fetching task content</p>
     </div>
   </div>
 );
 
-// Empty card component
-const EmptyCard = ({ 
-  title, 
-  subtitle, 
-  primaryAction, 
-  secondaryAction 
-}: { 
-  title: string; 
-  subtitle: string; 
-  primaryAction: { label: string; onClick: () => void };
-  secondaryAction: { label: string; to: string };
+// Legacy error component
+const LegacyError = ({ title = "Error Loading Content", message = "Failed to load task content.", onRetry }: { 
+  title?: string; 
+  message?: string; 
+  onRetry?: () => void 
 }) => (
-  <div className="text-center py-12">
-    <h3 className="text-lg font-semibold text-gray-900 mb-2">{title}</h3>
-    <p className="text-gray-600 mb-6">{subtitle}</p>
-    <div className="space-x-4">
-      <Button onClick={primaryAction.onClick} variant="outline">
-        {primaryAction.label}
-      </Button>
-      <WouterLink href={secondaryAction.to}>
-        <Button variant="ghost">
-          {secondaryAction.label}
-        </Button>
-      </WouterLink>
+  <div className="container mx-auto px-4 py-12">
+    <div className="max-w-2xl mx-auto border rounded-lg p-6 bg-white">
+      <h2 className="text-xl font-semibold mb-2">{title}</h2>
+      <p className="text-gray-600 mb-6">{message}</p>
+      <div className="flex gap-3">
+        {onRetry && (
+          <button className="px-4 py-2 rounded bg-gray-900 text-white" onClick={onRetry}>
+            Try Again
+          </button>
+        )}
+        <a className="px-4 py-2 rounded border" href="/">Back to Dashboard</a>
+      </div>
     </div>
+  </div>
+);
+
+// Legacy practice layout component
+const LegacyPracticeLayout = ({
+  title,
+  week,
+  day,
+  accentLabel,
+  audioUrl,
+  transcript,
+  replayCount,
+  onToggleTranscript,
+  questionsBlock,
+}: {
+  title: string;
+  week?: string | number;
+  day?: string | number;
+  accentLabel?: string;
+  audioUrl?: string | null;
+  transcript?: string | null;
+  replayCount?: number;
+  onToggleTranscript?: () => void;
+  questionsBlock?: React.ReactNode;
+}) => (
+  <div className="container mx-auto px-4 py-6">
+    {/* Top bar */}
+    <div className="flex items-center justify-between mb-6">
+      <a href="/" className="text-sm text-gray-600 hover:text-gray-900">&larr; Back to Dashboard</a>
+      <div className="text-sm text-gray-500">Session time: <span>—</span></div>
+    </div>
+
+    {/* Title + chips */}
+    <div className="mb-6">
+      <h1 className="text-2xl font-semibold">{title}</h1>
+      <div className="mt-2 flex items-center gap-2 text-xs">
+        {week && <span className="px-2 py-0.5 rounded-full bg-gray-100">Week {week}</span>}
+        {day && <span className="px-2 py-0.5 rounded-full bg-gray-100">Day {day}</span>}
+        <span className="px-2 py-0.5 rounded-full bg-gray-100">listening</span>
+      </div>
+    </div>
+
+    {/* Audio card */}
+    <div className="mb-6 border rounded-lg">
+      <div className="p-4 border-b">
+        <div className="flex items-center justify-between">
+          <div className="font-medium">Audio Player</div>
+          {accentLabel && <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100">{accentLabel}</span>}
+        </div>
+        <p className="text-sm text-gray-600 mt-1">Listen carefully to the audio and answer the questions.</p>
+      </div>
+
+      <div className="p-4">
+        <button className="text-sm text-gray-700 underline" onClick={onToggleTranscript}>
+          Show transcript
+        </button>
+
+        <div className="mt-3">
+          <audio controls preload="metadata" src={audioUrl ?? ""} className="w-full" />
+        </div>
+
+        <div className="mt-2 flex items-center justify-between text-xs text-gray-600">
+          <div>{typeof replayCount === "number" ? `${replayCount} replays remaining` : null}</div>
+          <div>{accentLabel ? accentLabel.replace(" Accent", "").toLowerCase() + " accent" : null}</div>
+        </div>
+
+        {transcript && (
+          <div className="mt-4 p-3 bg-gray-50 rounded text-sm whitespace-pre-wrap">{transcript}</div>
+        )}
+      </div>
+    </div>
+
+    {/* Questions */}
+    <div>{questionsBlock}</div>
   </div>
 );
 
@@ -347,6 +377,7 @@ export default function Practice() {
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [isSubmitted, setIsSubmitted] = useState(false);
+  const [showTranscript, setShowTranscript] = useState(false);
 
   // Ensure startTask runs once per taskId
   const startedRef = useRef<string | null>(null);
@@ -519,242 +550,126 @@ export default function Practice() {
 
   // Missing task id → error (do NOT spin)
   if (!taskId) {
-    return (
-      <PageShell>
-        <ErrorCard
-          title="Missing task id"
-          message="We couldn't find this session's task id in the URL. Please return to the dashboard and start the task again."
-          primaryAction={{ label: "Back to Dashboard", to: "/" }}
-        />
-      </PageShell>
-    );
+    return <LegacyError title="Missing task id" message="We couldn't find this session's task id in the URL." />;
   }
 
   // Loading gate
   if (isFetchingContent || isFetchingProgress) {
-    return (
-      <PageShell>
-        <LoadingCard title="Loading practice session..." subtitle="Fetching task content" />
-      </PageShell>
-    );
+    return <LegacyLoading />;
   }
 
   if (contentStatus === 'error') {
     return (
-      <PageShell>
-        <ErrorCard
-          title="Error loading content"
-          message={contentError instanceof Error ? contentError.message : 'Unknown error'}
-          primaryAction={{
-            label: "Try again",
-            onClick: () => queryClient.invalidateQueries({ queryKey: [`/api/firebase/task-content/${taskId}`] }),
-          }}
-          secondaryAction={{ label: "Back to Dashboard", to: "/" }}
-        />
-      </PageShell>
+      <LegacyError 
+        message={contentError instanceof Error ? contentError.message : 'Unknown error'}
+        onRetry={() => queryClient.invalidateQueries({ queryKey: [`/api/firebase/task-content/${taskId}`] })}
+      />
     );
   }
 
-  /**
-   * IMPORTANT: Do not fall back to spinner when data is falsy.
-   * If the query finished but content is missing, show an explicit empty state.
-   */
   if (contentStatus === 'success' && !content?.id) {
     return (
-      <PageShell>
-        <EmptyCard
-          title="No content found for this task"
-          subtitle="This task may still be generating. Try again shortly or return to the dashboard."
-          primaryAction={{
-            label: 'Try again',
-            onClick: () => queryClient.invalidateQueries({ queryKey: [`/api/firebase/task-content/${taskId}`] }),
-          }}
-          secondaryAction={{ label: 'Back to Dashboard', to: '/' }}
-        />
-      </PageShell>
+      <LegacyError 
+        title="No content available"
+        message="This task may still be generating. Try again shortly."
+        onRetry={() => queryClient.invalidateQueries({ queryKey: [`/api/firebase/task-content/${taskId}`] })}
+      />
     );
   }
 
-  return (
-    <PageShell>
-      <QuotaErrorAlert visible={false} />
+  // Prepare questions block for legacy layout
+  const questionsBlock = questions.length > 0 ? (
+    <div>
+      <h2 className="text-xl font-semibold mb-4">Question {currentQuestionIndex + 1} of {questions.length}</h2>
       
-      <div className="space-y-8">
-        {/* Header */}
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">{title}</h1>
-          <p className="text-gray-600 mt-2">IELTS Listening Practice</p>
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Audio Player */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center">
-                <Volume2 className="h-5 w-5 mr-2" />
-                Audio Player
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <audio 
-                ref={audioRef} 
-                preload="auto" 
-                controls={false}
-                src={undefined}
-              />
-              
-              <div className="flex items-center space-x-4">
-                <Button 
-                  onClick={isPlaying ? handlePause : handlePlay}
-                  disabled={!audioSrc}
-                  size="lg"
-                  className="flex-shrink-0"
-                >
-                  {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
-                </Button>
-                
-                <div className="flex-1">
-                  <div className="flex items-center space-x-2 text-sm text-gray-600 mb-2">
-                    <span>{Math.floor(currentTime / 60)}:{(Math.floor(currentTime % 60)).toString().padStart(2, '0')}</span>
-                    <span>/</span>
-                    <span>{Math.floor(duration / 60)}:{(Math.floor(duration % 60)).toString().padStart(2, '0')}</span>
-                  </div>
-                  
+      {currentQuestion && (
+        <div className="mb-6">
+          <p className="text-lg mb-4">{currentQuestion.text}</p>
+          
+          {currentQuestion.type === 'multiple-choice' && (
+            <div className="space-y-2">
+              {currentQuestion.options.map((option: any) => (
+                <label key={option.id} className="flex items-center space-x-3 p-3 border rounded-lg cursor-pointer hover:bg-gray-50">
                   <input
-                    type="range"
-                    min="0"
-                    max={duration || 100}
-                    value={currentTime}
-                    onChange={(e) => handleSeek(Number(e.target.value))}
-                    className="w-full"
-                    disabled={!audioSrc}
+                    type="radio"
+                    name={`question-${currentQuestion.id}`}
+                    value={option.id}
+                    checked={answers[currentQuestion.id] === option.id}
+                    onChange={() => handleSelectAnswer(option.id)}
+                    className="text-blue-600"
                   />
-                </div>
-              </div>
-              
-              <div className="flex items-center space-x-2">
-                <Volume2 className="h-4 w-4 text-gray-600" />
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={volume}
-                  onChange={(e) => setVolume(Number(e.target.value))}
-                  className="flex-1"
-                />
-                <span className="text-sm text-gray-600 w-8">{volume}%</span>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Transcript */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center">
-                <AlignLeft className="h-5 w-5 mr-2" />
-                Transcript
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="bg-gray-50 p-4 rounded-lg max-h-64 overflow-y-auto">
-                <p className="text-sm leading-relaxed whitespace-pre-wrap">
-                  {transcript || 'Transcript will appear here once available.'}
-                </p>
-              </div>
-            </CardContent>
-          </Card>
+                  <span>{option.text}</span>
+                </label>
+              ))}
+            </div>
+          )}
+          
+          {currentQuestion.type === 'short-answer' && (
+            <input
+              type="text"
+              value={answers[currentQuestion.id] || ''}
+              onChange={(e) => handleTextAnswer(e.target.value)}
+              placeholder="Enter your answer..."
+              className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            />
+          )}
         </div>
-
-        {/* Questions */}
-        {questions.length > 0 && (
-          <Card>
-            <CardHeader>
-              <CardTitle>
-                Question {currentQuestionIndex + 1} of {questions.length}
-              </CardTitle>
-              <CardDescription>
-                {!isSubmitted && "Answer the question based on what you heard"}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {currentQuestion && (
-                <>
-                  {currentQuestion.type === 'multiple-choice' && (
-                    <MultipleChoiceQuestion
-                      question={currentQuestion}
-                      selectedAnswer={answers[currentQuestion.id] || null}
-                      onSelectAnswer={handleSelectAnswer}
-                      isSubmitted={isSubmitted}
-                    />
-                  )}
-                  
-                  {currentQuestion.type === 'fill-in-the-gap' && (
-                    <FillInTheGapQuestion
-                      question={currentQuestion}
-                      answer={answers[currentQuestion.id] || ''}
-                      onAnswerChange={handleTextAnswer}
-                      isSubmitted={isSubmitted}
-                    />
-                  )}
-                </>
-              )}
-            </CardContent>
-            <CardFooter className="flex justify-between">
-              <Button 
-                onClick={goToPreviousQuestion}
-                disabled={currentQuestionIndex === 0}
-                variant="outline"
-              >
-                Previous
-              </Button>
-              
-              <div className="flex space-x-2">
-                {!isSubmitted && isLastQuestion && areAllQuestionsAnswered() && (
-                  <Button onClick={handleSubmit}>
-                    Submit Answers
-                  </Button>
-                )}
-                
-                {!isLastQuestion && (
-                  <Button 
-                    onClick={goToNextQuestion}
-                    disabled={!isCurrentQuestionAnswered()}
-                  >
-                    Next
-                  </Button>
-                )}
-              </div>
-            </CardFooter>
-          </Card>
-        )}
-
-        {/* Results */}
-        {isSubmitted && (
-          <Card>
-            <CardHeader>
-              <CardTitle>Practice Complete!</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-center py-8">
-                <div className="text-4xl font-bold text-green-600 mb-2">
-                  {calculateScore()}/{questions.length}
-                </div>
-                <p className="text-gray-600 mb-4">
-                  You got {calculateScore()} out of {questions.length} questions correct
-                </p>
-                <div className="flex justify-center space-x-4">
-                  <Button onClick={() => window.location.reload()} variant="outline">
-                    Try Again
-                  </Button>
-                  <WouterLink href="/">
-                    <Button>Back to Dashboard</Button>
-                  </WouterLink>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
+      )}
+      
+      <div className="flex justify-between items-center">
+        <button
+          onClick={goToPreviousQuestion}
+          disabled={currentQuestionIndex === 0}
+          className="px-4 py-2 border rounded disabled:opacity-50"
+        >
+          Previous
+        </button>
+        
+        <div className="flex gap-2">
+          {!isLastQuestion ? (
+            <button
+              onClick={goToNextQuestion}
+              disabled={!isCurrentQuestionAnswered()}
+              className="px-4 py-2 rounded bg-gray-900 text-white disabled:opacity-50"
+            >
+              Next
+            </button>
+          ) : (
+            <button
+              onClick={handleSubmit}
+              disabled={!areAllQuestionsAnswered()}
+              className="px-4 py-2 rounded bg-green-600 text-white disabled:opacity-50"
+            >
+              Submit
+            </button>
+          )}
+        </div>
       </div>
-    </PageShell>
+      
+      {isSubmitted && (
+        <div className="mt-6 p-4 bg-green-50 border border-green-200 rounded-lg">
+          <h3 className="font-semibold text-green-800 mb-2">Results</h3>
+          <p className="text-green-700">You scored {calculateScore()} out of {questions.length} questions correctly.</p>
+        </div>
+      )}
+    </div>
+  ) : (
+    <div className="text-center py-8 text-gray-500">
+      <p>No questions available for this task.</p>
+    </div>
+  );
+
+  return (
+    <LegacyPracticeLayout
+      title={title}
+      week={(params as any)?.week}
+      day={(params as any)?.day}
+      accentLabel={content?.accent ? `${content.accent} Accent` : undefined}
+      audioUrl={content?.audioUrl ?? null}
+      transcript={showTranscript ? (content?.scriptText ?? null) : null}
+      replayCount={typeof content?.replayLimit === "number" ? content.replayLimit : undefined}
+      onToggleTranscript={() => setShowTranscript(!showTranscript)}
+      questionsBlock={questionsBlock}
+    />
   );
 }
