@@ -21,13 +21,16 @@ export type TaskContent = {
 type ApiOk = { success: true; taskContent: any };
 type ApiErr = { success: false; message?: string };
 
-export function useTaskContent(taskIdOrOpts: { taskId: string } | string | null | undefined) {
-  const taskId = typeof taskIdOrOpts === 'string' ? taskIdOrOpts : taskIdOrOpts?.taskId;
+export function useTaskContent(
+  taskId?: string | null,
+  opts?: { enabled?: boolean }
+) {
   const { getToken, loading: authLoading } = useFirebaseAuthContext();
+  const enabled = opts?.enabled ?? Boolean(taskId && !authLoading && typeof getToken === 'function');
 
   return useQuery({
-    queryKey: ['/api/firebase/task-content', taskId],
-    enabled: Boolean(taskId && !authLoading && typeof getToken === 'function'),
+    queryKey: [`/api/firebase/task-content/${taskId}`],
+    enabled,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     staleTime: 0,

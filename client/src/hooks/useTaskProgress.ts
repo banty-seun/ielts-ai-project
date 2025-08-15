@@ -75,18 +75,19 @@ const defaultTaskProgressResult: UseTaskProgressResult = {
  * Custom hook to fetch and update task progress records
  * Optimized version with more efficient caching and state management
  * 
- * @param weeklyPlanId ID of the weekly plan to fetch tasks for
- * @param onSuccess Optional callback when data is loaded successfully
- * @param onError Optional callback when an error occurs
- * @param enabled Flag to enable/disable the query (defaults to true)
+ * @param taskIdOrOptions Either a string taskId or options object
+ * @param opts Additional options with enabled flag
  */
-export function useTaskProgress({ 
-  weeklyPlanId, 
-  progressId,
-  onSuccess, 
-  onError, 
-  enabled 
-}: UseTaskProgressOptions): UseTaskProgressResult {
+export function useTaskProgress(
+  taskIdOrOptions?: string | UseTaskProgressOptions,
+  opts?: { enabled?: boolean }
+): UseTaskProgressResult {
+  // Handle both old and new calling patterns
+  const options: UseTaskProgressOptions = typeof taskIdOrOptions === 'string' 
+    ? { progressId: taskIdOrOptions, enabled: opts?.enabled } 
+    : { ...taskIdOrOptions, enabled: opts?.enabled ?? taskIdOrOptions?.enabled };
+  
+  const { weeklyPlanId, progressId, onSuccess, onError, enabled } = options;
   // Add hasFetchedRef to track if we've already fetched
   const hasFetchedRef = useRef(false);
   

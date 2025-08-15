@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useRoute, Link as WouterLink, useLocation } from 'wouter';
 import { ChevronLeft, Play, Pause, RotateCcw, Volume2, AlignLeft, CheckCircle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from '@/components/ui/card';
@@ -199,13 +199,42 @@ const LoadingCard = ({ title, subtitle }: { title: string; subtitle: string }) =
 );
 
 // Error card component
-const ErrorCard = ({ title, message, onRetry }: { title: string; message: string; onRetry: () => void }) => (
+const ErrorCard = ({ 
+  title, 
+  message, 
+  primaryAction,
+  secondaryAction 
+}: { 
+  title: string; 
+  message: string; 
+  primaryAction?: { label: string; onClick?: () => void; to?: string };
+  secondaryAction?: { label: string; to: string };
+}) => (
   <div className="text-center py-12">
     <h3 className="text-lg font-semibold text-red-600 mb-2">{title}</h3>
     <p className="text-gray-600 mb-4">{message}</p>
-    <Button onClick={onRetry} variant="outline">
-      Try Again
-    </Button>
+    <div className="space-x-4">
+      {primaryAction && (
+        primaryAction.onClick ? (
+          <Button onClick={primaryAction.onClick} variant="outline">
+            {primaryAction.label}
+          </Button>
+        ) : primaryAction.to ? (
+          <WouterLink href={primaryAction.to}>
+            <Button variant="outline">
+              {primaryAction.label}
+            </Button>
+          </WouterLink>
+        ) : null
+      )}
+      {secondaryAction && (
+        <WouterLink href={secondaryAction.to}>
+          <Button variant="ghost">
+            {secondaryAction.label}
+          </Button>
+        </WouterLink>
+      )}
+    </div>
   </div>
 );
 
@@ -238,50 +267,74 @@ const EmptyCard = ({
 );
 
 export default function Practice() {
-  const [, params] = useRoute('/practice/:taskId');
+  const [, params] = useRoute('/practice/:week/:day');
   const [location] = useLocation();
   const { toast } = useToast();
   const isMobile = useIsMobile();
   
-  const taskId = params?.taskId;
   const DEBUG = true;
   
-  // Get task content and progress using our hooks with full query state
+  // Route params (fallback)
+  const routeTaskId = (params as any)?.taskId as string | undefined;
+
+  // Parse query params on location change
+  const search = useMemo(() => (typeof window !== "undefined" ? window.location.search : ""), [location]);
+  const qs = useMemo(() => new URLSearchParams(search), [search]);
+
+  const progressId = qs.get("progressId") ?? undefined;
+  const urlTaskId = qs.get("taskId") ?? undefined;
+
+  // Final task id preference: progressId -> taskId -> route param
+  const taskId = progressId || urlTaskId || routeTaskId;
+
+  // Explicit query enabling
+  const contentEnabled = Boolean(taskId);
+  const progressEnabled = Boolean(taskId);
+
+  if (DEBUG) {
+    console.log("[PRACTICE][route]", {
+      href: typeof window !== "undefined" ? window.location.href : "(ssr)",
+      progressId,
+      urlTaskId,
+      routeTaskId,
+      taskId,
+    });
+  }
+  
+  // Queries with explicit enabled
   const {
     data: content,
     status: contentStatus,
-    isFetching: contentFetching,
     fetchStatus: contentFetchStatus,
     error: contentError,
-  } = useTaskContent(taskId);
+  } = useTaskContent(taskId, { enabled: contentEnabled });
 
   const {
     taskProgress: progress,
     isLoading: progressLoading,
     error: progressError,
     startTask,
-  } = useTaskProgress({ progressId: taskId, enabled: Boolean(taskId) });
+  } = useTaskProgress(taskId ?? "", { enabled: progressEnabled });
   
-  // Simulate status for consistency
-  const progressStatus = progressLoading ? 'loading' : progressError ? 'error' : 'success';
-  const progressFetching = progressLoading;
+  // Simulate TanStack v5 status patterns for consistency
+  const progressStatus = progressLoading ? 'pending' : progressError ? 'error' : 'success';
   const progressFetchStatus = progressLoading ? 'fetching' : 'idle';
 
-  // Log precise query states (one line per render)
   if (DEBUG) {
-    // eslint-disable-next-line no-console
-    console.log('[PRACTICE][query]', {
+    console.log("[PRACTICE][query]", {
       taskId,
       contentStatus,
-      contentFetching,
       contentFetchStatus,
-      hasContent: Boolean(content && content.id),
+      hasContent: Boolean(content?.id),
       progressStatus,
-      progressFetching,
       progressFetchStatus,
       hasProgress: Boolean(progress),
     });
   }
+
+  // Derived loading flags (TanStack v5 style)
+  const isFetchingContent = contentFetchStatus === "fetching";
+  const isFetchingProgress = progressFetchStatus === "fetching";
 
   // Audio player refs and state
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -464,8 +517,21 @@ export default function Practice() {
     return score;
   };
 
-  // REPLACE any existing loader/error gating with this exact block:
-  if (contentStatus === 'pending' || progressStatus === 'loading') {
+  // Missing task id → error (do NOT spin)
+  if (!taskId) {
+    return (
+      <PageShell>
+        <ErrorCard
+          title="Missing task id"
+          message="We couldn't find this session's task id in the URL. Please return to the dashboard and start the task again."
+          primaryAction={{ label: "Back to Dashboard", to: "/" }}
+        />
+      </PageShell>
+    );
+  }
+
+  // Loading gate
+  if (isFetchingContent || isFetchingProgress) {
     return (
       <PageShell>
         <LoadingCard title="Loading practice session..." subtitle="Fetching task content" />
@@ -479,7 +545,11 @@ export default function Practice() {
         <ErrorCard
           title="Error loading content"
           message={contentError instanceof Error ? contentError.message : 'Unknown error'}
-          onRetry={() => queryClient.invalidateQueries({ queryKey: [`/api/firebase/task-content/${taskId}`] })}
+          primaryAction={{
+            label: "Try again",
+            onClick: () => queryClient.invalidateQueries({ queryKey: [`/api/firebase/task-content/${taskId}`] }),
+          }}
+          secondaryAction={{ label: "Back to Dashboard", to: "/" }}
         />
       </PageShell>
     );
