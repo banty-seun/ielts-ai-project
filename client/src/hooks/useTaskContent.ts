@@ -2,23 +2,27 @@ import { useQuery } from '@tanstack/react-query';
 import { getFreshWithAuth } from '@/lib/apiClient';
 import { useFirebaseAuthContext } from '@/contexts/FirebaseAuthContext';
 
-type TaskContent = {
+const DEBUG = Boolean((window as any).__DEBUG__);
+
+export type TaskContent = {
   id: string;
-  scriptText: string | null;
-  audioUrl: string | null;
-  questions: any[];
-  accent?: string | null;
-  duration?: number | 0;
-  replayLimit?: number | 3;
-  /** internal status for UI gating */
-  _status: 'preparing' | 'ready';
+  title?: string | null;
+  scenario?: string | null;
+  conversationType?: string | null;
+  scriptText?: string | null;
+  audioUrl?: string | null;
+  questions?: any[];
 };
 
-type ApiOk = { success: true; taskContent: any };
-type ApiErr = { success: false; message?: string };
+type ApiResponse = { 
+  success: true; 
+  taskContent: any;
+} | { 
+  success: false; 
+  message?: string; 
+};
 
-export function useTaskContent(taskIdOrOpts: { taskId: string } | string | null | undefined) {
-  const taskId = typeof taskIdOrOpts === 'string' ? taskIdOrOpts : taskIdOrOpts?.taskId;
+export function useTaskContent(taskId: string | null | undefined) {
   const { getToken, loading: authLoading } = useFirebaseAuthContext();
 
   return useQuery({
@@ -26,73 +30,36 @@ export function useTaskContent(taskIdOrOpts: { taskId: string } | string | null 
     enabled: Boolean(taskId && !authLoading && typeof getToken === 'function'),
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
-    refetchOnMount: 'always',
-    staleTime: 0,
     retry: 1,
-    queryFn: async (): Promise<ApiOk> => {
+    queryFn: async (): Promise<TaskContent> => {
       if (!taskId) throw new Error('Task ID is required');
 
-      // Call API (getFreshWithAuth ALWAYS returns Response or throws)
+      if (DEBUG) console.log('[useTaskContent] Fetching content for task:', taskId);
+
       const res = await getFreshWithAuth(`/api/firebase/task-content/${taskId}`, getToken);
 
       if (!res.ok) {
-        // Rich error message using json/text fallback
-        let details = '';
-        try {
-          const ct = res?.headers?.get ? res.headers.get('content-type') : null;
-          if (ct && ct.includes('application/json')) {
-            const j = await res.clone().json();
-            details = j?.message ? ` - ${j.message}` : ` - ${JSON.stringify(j)}`;
-          } else {
-            const t = await res.clone().text();
-            details = t ? ` - ${t.slice(0, 300)}` : '';
-          }
-        } catch {
-          // swallow parse errors
-        }
-        throw new Error(`Task content request failed (${res.status})${details}`);
+        throw new Error(`Failed to load task content (${res.status})`);
       }
 
-      // Parse JSON, clone first so body is not consumed by any future readers
-      let data: ApiOk | ApiErr;
-      try {
-        data = await res.clone().json();
-      } catch (e: any) {
-        const txt = await res.text().catch(() => '');
-        throw new Error(
-          `Failed to parse task content JSON: ${e?.message ?? 'unknown'}${txt ? ` | raw="${txt.slice(0, 180)}"` : ''}`
-        );
+      const data: ApiResponse = await res.json();
+
+      if (!data.success) {
+        throw new Error(data.message || 'Failed to load task content');
       }
 
-      // Must have success true + taskContent object; otherwise treat like API error
-      if (!(data as ApiOk)?.success) {
-        const msg = (data as ApiErr)?.message || 'API returned success:false';
-        throw new Error(msg);
-      }
-
-      if (!(data as any).taskContent) {
-        // Return empty skeleton instead of throwing—UI will show "preparing"
-        return { success: true, taskContent: { id: String(taskId), scriptText: null, audioUrl: null, questions: [] } } as ApiOk;
-      }
-
-      return data as ApiOk;
-    },
-    select: (data: ApiOk): TaskContent => {
-      const tc = data?.taskContent ?? {};
-      const id = typeof tc.id === 'string' ? tc.id : String(taskIdOrOpts && typeof taskIdOrOpts === 'object' ? taskIdOrOpts.taskId : taskIdOrOpts);
-
-      const content: TaskContent = {
-        id,
-        scriptText: tc.scriptText ?? null,
-        audioUrl: tc.audioUrl ?? null,
-        questions: Array.isArray(tc.questions) ? tc.questions : [],
-        accent: tc.accent ?? null,
-        duration: typeof tc.duration === 'number' ? tc.duration : 0,
-        replayLimit: typeof tc.replayLimit === 'number' ? tc.replayLimit : 3,
-        _status: tc.audioUrl ? 'ready' : 'preparing',
+      // Normalize the response - never return null, always return a valid shape
+      const taskContent = data.taskContent || {};
+      
+      return {
+        id: taskContent.id || taskId,
+        title: taskContent.taskTitle || taskContent.title || null,
+        scenario: taskContent.scenario || null,
+        conversationType: taskContent.conversationType || null,
+        scriptText: taskContent.scriptText || null,
+        audioUrl: taskContent.audioUrl || null,
+        questions: Array.isArray(taskContent.questions) ? taskContent.questions : []
       };
-
-      return content;
-    },
+    }
   });
 }
