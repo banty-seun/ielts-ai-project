@@ -23,9 +23,10 @@ import { queryClient } from '@/lib/queryClient';
 const DEBUG = Boolean((window as any).__DEBUG__);
 
 // Question types from API
+// Use normalized types from useTaskContent hook
 interface QuestionOption {
   id: string;
-  text: string;
+  label: string;
 }
 
 interface Question {
@@ -588,7 +589,7 @@ export default function Practice() {
           
           {currentQuestion.type === 'multiple-choice' && (
             <div className="space-y-2">
-              {currentQuestion.options.map((option: any) => (
+              {currentQuestion.options.map((option) => (
                 <label key={option.id} className="flex items-center space-x-3 p-3 border rounded-lg cursor-pointer hover:bg-gray-50">
                   <input
                     type="radio"
@@ -598,7 +599,7 @@ export default function Practice() {
                     onChange={() => handleSelectAnswer(option.id)}
                     className="text-blue-600"
                   />
-                  <span>{option.text}</span>
+                  <span>{(option as any).label ?? (option as any).text}</span>
                 </label>
               ))}
             </div>

@@ -5,6 +5,18 @@ import { useFirebaseAuthContext } from '@/contexts/FirebaseAuthContext';
 // Debug toggle
 const DEBUG = Boolean((window as any).__DEBUG__);
 
+// Canonical UI question types
+type UiQuestionOption = { id: string; label: string };
+type UiQuestion = {
+  id: string;
+  text: string;
+  type: 'multiple-choice' | 'fill-in-the-gap' | 'fill-in-multiple-gaps';
+  options?: UiQuestionOption[];
+  correctAnswer?: string;
+  explanation?: string;
+  hint?: string;
+};
+
 export type TaskContent = {
   id: string;
   title: string | null;
@@ -12,7 +24,7 @@ export type TaskContent = {
   conversationType: string | null;
   scriptText: string | null;
   audioUrl: string | null;
-  questions: any[];
+  questions: UiQuestion[];
   accent?: string | null;
   duration?: number | 0;
   replayLimit?: number | 3;
@@ -94,6 +106,61 @@ export function useTaskContent(
     },
     select: (data: any) => {
       const tc = data?.taskContent ?? {};
+      
+      // Normalize questions from server format to UI format
+      const rawQs: any[] = Array.isArray(tc.questions) ? tc.questions : [];
+      
+      const normalizedQuestions: UiQuestion[] = rawQs
+        .map((q: any, qi: number): UiQuestion | null => {
+          // Normalize id
+          const id = String(q?.id ?? `q${qi + 1}`);
+
+          // Normalize question text (server uses "question", UI expects "text")
+          const textCandidate = q?.text ?? q?.question ?? '';
+          const text = typeof textCandidate === 'string' ? textCandidate : '';
+
+          if (!text.trim()) return null; // drop unusable rows
+
+          // Normalize type (default multiple-choice for now)
+          const type: UiQuestion['type'] =
+            (q?.type as UiQuestion['type']) ?? 'multiple-choice';
+
+          // Normalize options → [{ id, label }] (server uses "text", UI expects "label")
+          let options: UiQuestion['options'] | undefined;
+          if (Array.isArray(q?.options)) {
+            options = q.options
+              .map((o: any, oi: number) => {
+                const oid = String(o?.id ?? `o${oi + 1}`);
+                const labelCandidate =
+                  o?.label ?? o?.text ?? (typeof o === 'string' ? o : '');
+                const label =
+                  typeof labelCandidate === 'string' ? labelCandidate : '';
+                if (!label.trim()) return null;
+                return { id: oid, label };
+              })
+              .filter(Boolean) as UiQuestionOption[];
+          }
+
+          // Normalize other fields (optional)
+          const correctAnswer =
+            typeof q?.correctAnswer === 'string' ? q.correctAnswer : undefined;
+          const explanation =
+            typeof q?.explanation === 'string' ? q.explanation : undefined;
+          const hint =
+            typeof q?.hint === 'string' ? q.hint : undefined;
+
+          return { id, text, type, options, correctAnswer, explanation, hint };
+        })
+        .filter(Boolean) as UiQuestion[];
+
+      // Debug log for question normalization
+      if (DEBUG && normalizedQuestions.length > 0) {
+        console.log('[QUESTIONS][normalized]', {
+          count: normalizedQuestions.length,
+          sample: normalizedQuestions[0]
+        });
+      }
+      
       return {
         id: typeof tc.id === 'string' ? tc.id : taskId,
         title: tc.taskTitle ?? tc.title ?? null,
@@ -101,7 +168,7 @@ export function useTaskContent(
         conversationType: tc.conversationType ?? null,
         scriptText: tc.scriptText ?? null,
         audioUrl: tc.audioUrl ?? null,
-        questions: Array.isArray(tc.questions) ? tc.questions : [],
+        questions: normalizedQuestions,
         accent: tc.accent ?? 'British',
         duration: typeof tc.duration === 'number' ? tc.duration : 0,
         replayLimit: typeof tc.replayLimit === 'number' ? tc.replayLimit : 3,

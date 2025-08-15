@@ -1087,6 +1087,34 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
         console.log(`[Pipeline Stage 3] ✅ Audio already exists for task ${id} (${taskWithContent.duration || 'unknown'}s)`);
       }
       
+      // Optional: Normalize questions for client compatibility
+      function normalizeQuestionsForClient(qs: any[]): any[] {
+        return (Array.isArray(qs) ? qs : []).map((q: any, i: number) => {
+          const id = String(q?.id ?? `q${i + 1}`);
+          const text = typeof q?.text === 'string' ? q.text : (q?.question ?? '');
+          const type = q?.type ?? 'multiple-choice';
+          const options = Array.isArray(q?.options)
+            ? q.options.map((o: any, oi: number) => ({
+                id: String(o?.id ?? `o${oi + 1}`),
+                label: String(o?.label ?? o?.text ?? ''),
+              }))
+            : undefined;
+
+          return {
+            ...q,
+            id,
+            text, // Add text field for UI compatibility 
+            type,
+            options,
+          };
+        });
+      }
+
+      // Apply normalization if questions exist
+      if (taskWithContent.questions) {
+        taskWithContent.questions = normalizeQuestionsForClient(taskWithContent.questions);
+      }
+
       // Log final payload keys before response
       console.log(`[Task Content API] Final response payload keys for ${id}:`, {
         hasTaskContent: !!taskWithContent,
