@@ -17,6 +17,7 @@ import { useTaskProgress } from '@/hooks/useTaskProgress';
 import { useTaskContent } from '@/hooks/useTaskContent';
 import { useFirebaseAuthContext } from '@/contexts/FirebaseAuthContext';
 import { QuotaErrorAlert } from '@/components/QuotaErrorAlert';
+import { queryClient } from '@/lib/queryClient';
 
 // Debug toggle
 const DEBUG = Boolean((window as any).__DEBUG__);
@@ -188,6 +189,54 @@ const EmptyState = ({ message }: { message: string }) => (
   </div>
 );
 
+// Loading card component
+const LoadingCard = ({ title, subtitle }: { title: string; subtitle: string }) => (
+  <div className="flex flex-col items-center justify-center py-12">
+    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900 mb-4"></div>
+    <h3 className="text-lg font-semibold text-gray-900 mb-2">{title}</h3>
+    <p className="text-gray-600">{subtitle}</p>
+  </div>
+);
+
+// Error card component
+const ErrorCard = ({ title, message, onRetry }: { title: string; message: string; onRetry: () => void }) => (
+  <div className="text-center py-12">
+    <h3 className="text-lg font-semibold text-red-600 mb-2">{title}</h3>
+    <p className="text-gray-600 mb-4">{message}</p>
+    <Button onClick={onRetry} variant="outline">
+      Try Again
+    </Button>
+  </div>
+);
+
+// Empty card component
+const EmptyCard = ({ 
+  title, 
+  subtitle, 
+  primaryAction, 
+  secondaryAction 
+}: { 
+  title: string; 
+  subtitle: string; 
+  primaryAction: { label: string; onClick: () => void };
+  secondaryAction: { label: string; to: string };
+}) => (
+  <div className="text-center py-12">
+    <h3 className="text-lg font-semibold text-gray-900 mb-2">{title}</h3>
+    <p className="text-gray-600 mb-6">{subtitle}</p>
+    <div className="space-x-4">
+      <Button onClick={primaryAction.onClick} variant="outline">
+        {primaryAction.label}
+      </Button>
+      <WouterLink href={secondaryAction.to}>
+        <Button variant="ghost">
+          {secondaryAction.label}
+        </Button>
+      </WouterLink>
+    </div>
+  </div>
+);
+
 export default function Practice() {
   const [, params] = useRoute('/practice/:taskId');
   const [location] = useLocation();
@@ -195,13 +244,44 @@ export default function Practice() {
   const isMobile = useIsMobile();
   
   const taskId = params?.taskId;
+  const DEBUG = true;
   
-  // Get task content and progress using our hooks
-  const { data: contentData, status: contentStatus, error: contentError } = useTaskContent(taskId);
-  const { taskProgress, isLoading: progressLoading, error: progressError, startTask } = useTaskProgress({ 
-    progressId: taskId,
-    enabled: !!taskId 
-  });
+  // Get task content and progress using our hooks with full query state
+  const {
+    data: content,
+    status: contentStatus,
+    isFetching: contentFetching,
+    fetchStatus: contentFetchStatus,
+    error: contentError,
+  } = useTaskContent(taskId);
+
+  const {
+    taskProgress: progress,
+    isLoading: progressLoading,
+    error: progressError,
+    startTask,
+  } = useTaskProgress({ progressId: taskId, enabled: Boolean(taskId) });
+  
+  // Simulate status for consistency
+  const progressStatus = progressLoading ? 'loading' : progressError ? 'error' : 'success';
+  const progressFetching = progressLoading;
+  const progressFetchStatus = progressLoading ? 'fetching' : 'idle';
+
+  // Log precise query states (one line per render)
+  if (DEBUG) {
+    // eslint-disable-next-line no-console
+    console.log('[PRACTICE][query]', {
+      taskId,
+      contentStatus,
+      contentFetching,
+      contentFetchStatus,
+      hasContent: Boolean(content && content.id),
+      progressStatus,
+      progressFetching,
+      progressFetchStatus,
+      hasProgress: Boolean(progress),
+    });
+  }
 
   // Audio player refs and state
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -215,25 +295,24 @@ export default function Practice() {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [isSubmitted, setIsSubmitted] = useState(false);
 
-  // One-time "start task" per task
+  // Ensure startTask runs once per taskId
   const startedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!taskId || startedRef.current === taskId) return;
     startedRef.current = taskId;
-    if (DEBUG) console.log('[Practice] Starting task:', taskId);
-    startTask({ taskId });
-  }, [taskId, startTask]);
+    void startTask({ taskId });
+  }, [taskId]);
 
-  // Title precedence: scenario+conversationType → API title → route param → fallback
+  // Title derivation stays here, single source of truth
   const routeQueryTitle = new URLSearchParams(location.split('?')[1] || '').get('title') ?? undefined;
-  const title = 
-    (contentData?.scenario && contentData?.conversationType)
-      ? `${contentData.scenario}: ${contentData.conversationType}`
-      : (contentData?.title ?? routeQueryTitle ?? 'Listening Practice');
+  const title =
+    (content?.scenario && content?.conversationType
+      ? `${content.scenario}: ${content.conversationType}`
+      : content?.title) ?? routeQueryTitle ?? 'Listening Practice';
 
-  const transcript = contentData?.scriptText ?? '';
-  const audioSrc = contentData?.audioUrl ?? '';
-  const questions = Array.isArray(contentData?.questions) ? contentData.questions : [];
+  const transcript = content?.scriptText ?? '';
+  const audioSrc = content?.audioUrl ?? '';
+  const questions = Array.isArray(content?.questions) ? content.questions : [];
 
   // Audio element setup
   useEffect(() => {
@@ -385,17 +464,45 @@ export default function Practice() {
     return score;
   };
 
-  // Render gating: no mock fallbacks—show proper states instead
-  if (contentStatus === 'pending' || progressLoading) {
-    return <PageShell><Spinner label="Loading practice session..." /></PageShell>;
+  // REPLACE any existing loader/error gating with this exact block:
+  if (contentStatus === 'pending' || progressStatus === 'loading') {
+    return (
+      <PageShell>
+        <LoadingCard title="Loading practice session..." subtitle="Fetching task content" />
+      </PageShell>
+    );
   }
-  
-  if (contentStatus === 'error' || progressError) {
-    return <PageShell><ErrorPanel message="Unable to load this session." /></PageShell>;
+
+  if (contentStatus === 'error') {
+    return (
+      <PageShell>
+        <ErrorCard
+          title="Error loading content"
+          message={contentError instanceof Error ? contentError.message : 'Unknown error'}
+          onRetry={() => queryClient.invalidateQueries({ queryKey: [`/api/firebase/task-content/${taskId}`] })}
+        />
+      </PageShell>
+    );
   }
-  
-  if (!contentData?.id) {
-    return <PageShell><EmptyState message="No content yet. Please try again shortly." /></PageShell>;
+
+  /**
+   * IMPORTANT: Do not fall back to spinner when data is falsy.
+   * If the query finished but content is missing, show an explicit empty state.
+   */
+  if (contentStatus === 'success' && !content?.id) {
+    return (
+      <PageShell>
+        <EmptyCard
+          title="No content found for this task"
+          subtitle="This task may still be generating. Try again shortly or return to the dashboard."
+          primaryAction={{
+            label: 'Try again',
+            onClick: () => queryClient.invalidateQueries({ queryKey: [`/api/firebase/task-content/${taskId}`] }),
+          }}
+          secondaryAction={{ label: 'Back to Dashboard', to: '/' }}
+        />
+      </PageShell>
+    );
   }
 
   return (

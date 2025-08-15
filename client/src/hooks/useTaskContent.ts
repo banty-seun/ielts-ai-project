@@ -30,8 +30,7 @@ export function useTaskContent(taskIdOrOpts: { taskId: string } | string | null 
     enabled: Boolean(taskId && !authLoading && typeof getToken === 'function'),
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
-    refetchOnMount: false,
-    staleTime: Infinity,
+    staleTime: 0,
     retry: 1,
     queryFn: async (): Promise<ApiOk> => {
       if (!taskId) throw new Error('Task ID is required');
@@ -74,32 +73,36 @@ export function useTaskContent(taskIdOrOpts: { taskId: string } | string | null 
         throw new Error(msg);
       }
 
+      // Add a guard log before returning from queryFn:
+      if (DEBUG) {
+        console.log('[useTaskContent][returning]', {
+          ok: true,
+          hasTaskContent: Boolean((data as ApiOk)?.taskContent),
+          id: (data as ApiOk)?.taskContent?.id ?? taskId,
+        });
+      }
+
       if (!(data as any).taskContent) {
         // Return empty skeleton instead of throwing—UI will show "preparing"
         return { success: true, taskContent: { id: String(taskId), scriptText: null, audioUrl: null, questions: [] } } as ApiOk;
       }
 
-      if (DEBUG) console.log('[useTaskContent] Content loaded successfully');
       return data as ApiOk;
     },
-    select: (data: ApiOk): TaskContent => {
+    select: (data: any) => {
       const tc = data?.taskContent ?? {};
-      const id = typeof tc.id === 'string' ? tc.id : String(taskIdOrOpts && typeof taskIdOrOpts === 'object' ? taskIdOrOpts.taskId : taskIdOrOpts);
-
-      const content: TaskContent = {
-        id,
+      return {
+        id: typeof tc.id === 'string' ? tc.id : taskId,
         title: tc.taskTitle ?? tc.title ?? null,
         scenario: tc.scenario ?? null,
         conversationType: tc.conversationType ?? null,
         scriptText: tc.scriptText ?? null,
         audioUrl: tc.audioUrl ?? null,
         questions: Array.isArray(tc.questions) ? tc.questions : [],
-        accent: tc.accent ?? null,
+        accent: tc.accent ?? 'British',
         duration: typeof tc.duration === 'number' ? tc.duration : 0,
         replayLimit: typeof tc.replayLimit === 'number' ? tc.replayLimit : 3,
       };
-
-      return content;
     },
   });
 }
