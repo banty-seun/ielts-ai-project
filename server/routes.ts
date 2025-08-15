@@ -8,6 +8,7 @@ import { getTaskProgressById } from "./controllers/getTaskProgressController";
 import { v4 as uuidv4 } from 'uuid';
 import { generateIELTSPlan, generateListeningScriptForTask, generateQuestionsFromScript } from "./openai";
 import { generateAudioFromScript, checkAudioExists } from "./audioService";
+import { registerRegenerateRoutes } from "./routes/regenerate";
 
 /**
  * Helper function to pre-generate scripts for listening tasks
@@ -1143,6 +1144,9 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
       });
     }
   });
+
+  // Register regenerate routes for SSE-S3 audio fixing
+  registerRegenerateRoutes(app);
 
   const httpServer = createServer(app);
   return httpServer;
