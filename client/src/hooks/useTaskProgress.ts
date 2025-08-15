@@ -4,6 +4,9 @@ import { getQueryFn } from "@/lib/queryClient";
 import { queryClient, tokenManager } from "@/lib/queryClient";
 import { sharedTracker } from "@/lib/trackers";
 
+// Debug toggle
+const DEBUG = Boolean((window as any).__DEBUG__);
+
 // Mock API response types for type safety
 type ApiResponse = Response | { ok?: boolean; status?: number; statusText?: string; json?: () => Promise<any> } | null;
 
@@ -132,8 +135,8 @@ export function useTaskProgress({
         return { success: true, taskProgress: [] };
       }
       
-      // Add one-time network fetch log
-      console.log('[useTaskProgress] NETWORK FETCH - this should only appear once');
+      // Add one-time network fetch log (only in debug mode)
+      if (DEBUG) console.log('[useTaskProgress] NETWORK FETCH - this should only appear once');
       
       try {
         // Log the endpoint URL we're fetching
@@ -176,7 +179,7 @@ export function useTaskProgress({
     refetchOnReconnect: false,
     refetchInterval: false,
     retryOnMount: false,
-    enabled: !!(progressId || weeklyPlanId) && enabled !== false && !hasFetchedRef.current,
+    enabled: !!(progressId || weeklyPlanId) && enabled !== false,
     select: (data: any) => {
       if (!data || !data.success || !data.taskProgress) {
         return [];

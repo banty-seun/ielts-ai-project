@@ -2,16 +2,20 @@ import { useQuery } from '@tanstack/react-query';
 import { getFreshWithAuth } from '@/lib/apiClient';
 import { useFirebaseAuthContext } from '@/contexts/FirebaseAuthContext';
 
-type TaskContent = {
+// Debug toggle
+const DEBUG = Boolean((window as any).__DEBUG__);
+
+export type TaskContent = {
   id: string;
+  title: string | null;
+  scenario: string | null;
+  conversationType: string | null;
   scriptText: string | null;
   audioUrl: string | null;
   questions: any[];
   accent?: string | null;
   duration?: number | 0;
   replayLimit?: number | 3;
-  /** internal status for UI gating */
-  _status: 'preparing' | 'ready';
 };
 
 type ApiOk = { success: true; taskContent: any };
@@ -26,8 +30,8 @@ export function useTaskContent(taskIdOrOpts: { taskId: string } | string | null 
     enabled: Boolean(taskId && !authLoading && typeof getToken === 'function'),
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
-    refetchOnMount: 'always',
-    staleTime: 0,
+    refetchOnMount: false,
+    staleTime: Infinity,
     retry: 1,
     queryFn: async (): Promise<ApiOk> => {
       if (!taskId) throw new Error('Task ID is required');
@@ -75,6 +79,7 @@ export function useTaskContent(taskIdOrOpts: { taskId: string } | string | null 
         return { success: true, taskContent: { id: String(taskId), scriptText: null, audioUrl: null, questions: [] } } as ApiOk;
       }
 
+      if (DEBUG) console.log('[useTaskContent] Content loaded successfully');
       return data as ApiOk;
     },
     select: (data: ApiOk): TaskContent => {
@@ -83,13 +88,15 @@ export function useTaskContent(taskIdOrOpts: { taskId: string } | string | null 
 
       const content: TaskContent = {
         id,
+        title: tc.taskTitle ?? tc.title ?? null,
+        scenario: tc.scenario ?? null,
+        conversationType: tc.conversationType ?? null,
         scriptText: tc.scriptText ?? null,
         audioUrl: tc.audioUrl ?? null,
         questions: Array.isArray(tc.questions) ? tc.questions : [],
         accent: tc.accent ?? null,
         duration: typeof tc.duration === 'number' ? tc.duration : 0,
         replayLimit: typeof tc.replayLimit === 'number' ? tc.replayLimit : 3,
-        _status: tc.audioUrl ? 'ready' : 'preparing',
       };
 
       return content;
