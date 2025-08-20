@@ -6,7 +6,7 @@ import { verifyFirebaseAuth, ensureFirebaseUser } from "./firebaseAuth";
 import { batchInitializeTaskProgress } from "./controllers/taskProgressController";
 import { getTaskProgressById } from "./controllers/getTaskProgressController";
 import { v4 as uuidv4 } from 'uuid';
-import { generateIELTSPlan, generateListeningScriptForTask, generateQuestionsFromScript } from "./openai";
+import { generateIELTSPlan, generateIELTSPlan_debugWrapper, generateListeningScriptForTask, generateQuestionsFromScript } from "./openai";
 import { generateAudioFromScript, checkAudioExists } from "./audioService";
 import { registerRegenerateRoutes } from "./routes/regenerate";
 
@@ -642,9 +642,16 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
       await storage.updateOnboardingStatus(userId, true);
       
       try {
-        // Call OpenAI to generate the IELTS plan
+        // Call OpenAI to generate the IELTS plan (temporarily using debug wrapper)
         console.log('[Plan API] Calling OpenAI to generate IELTS plan...');
-        const plan = await generateIELTSPlan(onboardingData);
+        const debugResult = await generateIELTSPlan_debugWrapper(onboardingData);
+        
+        // For this diagnostic run, return the debug data instead of processing
+        return res.status(200).json({
+          success: true,
+          message: "Debug run completed",
+          debugData: debugResult
+        });
         
         // Save the main study plan to database
         const studyPlanId = uuidv4();

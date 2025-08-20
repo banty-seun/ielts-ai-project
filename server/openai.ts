@@ -2,6 +2,27 @@ import OpenAI from "openai";
 import { onboardingSchema, type TaskProgress, type Question, type QuestionOption } from "@shared/schema";
 import type { z } from "zod";
 
+// Debug types for investigation
+type DebugSlice = { head: string; tail: string; length: number };
+const sliceForDebug = (s: string, n = 300): DebugSlice => ({
+  head: s.slice(0, n),
+  tail: s.slice(Math.max(0, s.length - n)),
+  length: s.length,
+});
+
+interface PlanGenDebug {
+  scenario: "A_full" | "B_reduced";
+  model: string;
+  temperature: number;
+  maxTokens: number;
+  finishReason: string;
+  usage: any;
+  rawSummary: DebugSlice;
+  elapsedMs: number;
+  parseOk: boolean;
+  parseError?: { name: string; message: string; pos?: number; around?: string };
+}
+
 // Initialize OpenAI client
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -171,6 +192,247 @@ export async function generateIELTSPlan(data: OnboardingData): Promise<any> {
     console.error("OpenAI API Error:", error);
     throw error;
   }
+}
+
+// Debug wrapper function for investigation
+async function generateIELTSPlan_debugRun(
+  scenario: "A_full" | "B_reduced",
+  messages: any[],
+): Promise<PlanGenDebug> {
+  const startedAt = Date.now();
+  const model = "gpt-4o";
+  const temperature = 0;
+  const maxTokens = 4000;
+
+  const res = await openai.chat.completions.create({
+    model,
+    temperature,
+    max_tokens: maxTokens,
+    response_format: { type: "json_object" },
+    messages,
+  });
+
+  const finishReason = res.choices?.[0]?.finish_reason ?? "unknown";
+  const usage = res.usage ?? {};
+  const raw = res.choices?.[0]?.message?.content ?? "";
+  const rawSummary = sliceForDebug(raw, 300);
+
+  console.log(`[PlanGen][${scenario}][META]`, { finishReason, usage, elapsedMs: Date.now() - startedAt });
+  console.log(`[PlanGen][${scenario}][RAW_START]`, rawSummary.head);
+  console.log(`[PlanGen][${scenario}][RAW_END]`, rawSummary.tail);
+  console.log(`[PlanGen][${scenario}][RAW_LEN]`, rawSummary.length);
+
+  let parseOk = false;
+  let parseError: PlanGenDebug["parseError"] | undefined;
+
+  try {
+    JSON.parse(raw); // schema validation still happens outside; this is parse-only logging
+    parseOk = true;
+  } catch (err: any) {
+    const msg = String(err?.message ?? "");
+    const m = /position (\d+)/i.exec(msg);
+    let around: string | undefined;
+    let pos: number | undefined;
+    if (m) {
+      pos = Number(m[1]);
+      const start = Math.max(0, pos - 200);
+      const end = Math.min(raw.length, pos + 200);
+      around = raw.slice(start, end);
+    }
+    parseError = { name: String(err?.name ?? "Error"), message: msg, pos, around };
+    console.error(`[PlanGen][${scenario}][PARSE_ERROR]`, parseError);
+  }
+
+  return {
+    scenario,
+    model,
+    temperature,
+    maxTokens,
+    finishReason,
+    usage,
+    rawSummary,
+    elapsedMs: Date.now() - startedAt,
+    parseOk: parseOk,
+    parseError,
+  };
+}
+
+export async function generateIELTSPlan_debugWrapper(data: OnboardingData) {
+  // Extract user's preferences for prompt (same as original function)
+  const {
+    fullName,
+    targetBandScore,
+    testDate,
+    notDecided,
+    skillRatings,
+    immigrationGoal,
+    studyPreferences,
+  } = data;
+
+  const firstName = fullName.split(" ")[0];
+  const formattedTestDate = testDate
+    ? new Date(testDate).toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      })
+    : "not decided";
+
+  const immigrationGoalText = immigrationGoal === "study" ? "study" : "immigration";
+  const dailyCommitmentText =
+    {
+      "30min": "30 minutes",
+      "1hour": "1 hour",
+      "2hours": "2 hours",
+      "2hours+": "2+ hours",
+    }[studyPreferences.dailyCommitment] || "not specified";
+
+  const scheduleText =
+    {
+      weekday: "weekdays",
+      weekend: "weekends",
+      both: "both weekdays and weekends",
+    }[studyPreferences.schedule] || "not specified";
+
+  const styleText =
+    {
+      "ai-guided": "AI-guided learning",
+      "self-paced": "self-paced learning",
+      mixed: "a mix of AI-guided and self-paced learning",
+    }[studyPreferences.style] || "not specified";
+
+  // A) Full prompt (existing behavior)
+  const promptFull = `
+    Create a personalized 4-week IELTS preparation plan for ${firstName} who is preparing for the IELTS exam for Canadian ${immigrationGoalText}.
+
+    User Profile:
+    - Target IELTS Band Score: ${targetBandScore}
+    - Test Date: ${formattedTestDate}
+    - Current skill self-assessment:
+      * Listening: ${skillRatings.listening}/9
+      * Reading: ${skillRatings.reading}/9
+      * Writing: ${skillRatings.writing}/9
+      * Speaking: ${skillRatings.speaking}/9
+    - Study Preferences:
+      * Daily commitment: ${dailyCommitmentText}
+      * Study schedule: ${scheduleText}
+      * Learning style: ${styleText}
+
+    Plan Requirements:
+    1. The learner has committed to studying ${dailyCommitmentText} per day, on ${scheduleText} only. Generate a realistic IELTS study plan that respects this availability. Do not assign tasks on unavailable days. Keep each day's workload within ${dailyCommitmentText}.
+    2. Create a structured 4-week study plan with daily activities
+    3. Focus more heavily on skills with lower self-assessment scores
+    4. For each week, specify:
+       - Weekly goals
+       - Daily practice activities for each IELTS component
+       - Recommended resources and practice tests
+       - Progress tracking metrics
+    5. Include specific Canadian immigration context in examples and practice
+    6. IMPORTANT: Respect the schedule preference "${scheduleText}":
+       - If "weekdays": Only schedule activities Monday-Friday (days 1-5)
+       - If "weekends": Only schedule activities Saturday-Sunday (days 6-7)  
+       - If "both weekdays and weekends": Schedule across all 7 days
+    7. Format the response as structured JSON with the following schema:
+    {
+      "weeklyPlans": [
+        {
+          "week": 1,
+          "goals": ["goal1", "goal2", ...],
+          "days": [
+            {
+              "day": 1,
+              "dayType": "weekday|weekend",
+              "activities": [
+                {
+                  "skill": "listening|reading|writing|speaking",
+                  "title": "Activity title",
+                  "description": "Activity description",
+                  "duration": "30min",
+                  "resources": ["resource1", "resource2", ...]
+                }
+              ]
+            }
+          ],
+          "progressMetrics": ["metric1", "metric2", ...]
+        }
+      ],
+      "generalTips": ["tip1", "tip2", ...],
+      "recommendedResources": ["resource1", "resource2", ...]
+    }
+    `;
+
+  const messagesFull = [
+    {
+      role: "system",
+      content: "You are an expert IELTS tutor with specialized knowledge of Canadian immigration requirements. Your task is to create personalized IELTS study plans.",
+    },
+    {
+      role: "user",
+      content: promptFull,
+    },
+  ];
+
+  // B) Reduced scope prompt (Week 1 only)
+  const promptReduced = `
+    Create a personalized Week 1 ONLY IELTS preparation plan for ${firstName} who is preparing for the IELTS exam for Canadian ${immigrationGoalText}.
+
+    User Profile:
+    - Target IELTS Band Score: ${targetBandScore}
+    - Test Date: ${formattedTestDate}
+    - Current skill self-assessment:
+      * Listening: ${skillRatings.listening}/9
+      * Reading: ${skillRatings.reading}/9
+      * Writing: ${skillRatings.writing}/9
+      * Speaking: ${skillRatings.speaking}/9
+    - Study Preferences:
+      * Daily commitment: ${dailyCommitmentText}
+      * Study schedule: ${scheduleText}
+      * Learning style: ${styleText}
+
+    Plan Requirements:
+    1. Create ONLY Week 1 of the study plan
+    2. Respect the schedule preference "${scheduleText}"
+    3. Focus on foundational IELTS skills assessment
+    4. Format the response as structured JSON with this schema:
+    {
+      "week": 1,
+      "goals": ["goal1", "goal2", ...],
+      "days": [
+        {
+          "day": 1,
+          "dayType": "weekday|weekend",
+          "activities": [
+            {
+              "skill": "listening|reading|writing|speaking",
+              "title": "Activity title",
+              "description": "Activity description",
+              "duration": "30min",
+              "resources": ["resource1", "resource2", ...]
+            }
+          ]
+        }
+      ],
+      "progressMetrics": ["metric1", "metric2", ...]
+    }
+    `;
+
+  const messagesReduced = [
+    {
+      role: "system",
+      content: "You are an expert IELTS tutor with specialized knowledge of Canadian immigration requirements. Your task is to create personalized IELTS study plans.",
+    },
+    {
+      role: "user",
+      content: promptReduced,
+    },
+  ];
+
+  // Run both scenarios
+  const A = await generateIELTSPlan_debugRun("A_full", messagesFull);
+  const B = await generateIELTSPlan_debugRun("B_reduced", messagesReduced);
+
+  console.log("[PlanGen][REPORT]", { A, B });
+  return { A, B };
 }
 
 // Define interface for the formatted user data
