@@ -324,6 +324,35 @@ export async function deleteWithAuth<T>(path: string): Promise<T> {
   return safeParseJson<T>(response);
 }
 
+// Safe POST helper that always builds absolute URL and valid headers
+export async function postJsonWithAuth(
+  path: string,
+  getToken: () => Promise<string | null>,
+  body: unknown,
+): Promise<Response> {
+  // Make absolute URL (avoids "expected pattern" from fetch/Request/URL)
+  const url = new URL(path, window.location.origin);
+
+  if (typeof getToken !== 'function') {
+    throw new Error('getToken is not a function');
+  }
+
+  const token = await getToken();
+  const headers = new Headers();
+  headers.set('Content-Type', 'application/json');
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+
+  // DEBUG: minimal diagnostics
+  console.log('[POST][attempt] url', url.toString(), 'hasToken', !!token);
+
+  return fetch(url.toString(), {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body ?? {}),
+    credentials: 'same-origin',
+  });
+}
+
 // These functions are used directly with getToken from FirebaseAuthContext
 // Example usage:
 // const { getToken } = useFirebaseAuthContext();

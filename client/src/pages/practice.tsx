@@ -18,7 +18,7 @@ import { useTaskContent } from '@/hooks/useTaskContent';
 import { useFirebaseAuthContext } from '@/contexts/FirebaseAuthContext';
 import { QuotaErrorAlert } from '@/components/QuotaErrorAlert';
 import { queryClient } from '@/lib/queryClient';
-import { getFreshWithAuth } from '@/lib/apiClient';
+import { getFreshWithAuth, postJsonWithAuth } from '@/lib/apiClient';
 
 // Debug toggle
 const DEBUG = Boolean((window as any).__DEBUG__);
@@ -562,44 +562,54 @@ export default function Practice() {
   };
 
   const handleSubmit = async () => {
-    if (!taskId || !questions.length || isSubmitting) return;
-
-    setIsSubmitting(true);
-    setIsSubmitted(true);
+    // Add pinpoint logging to confirm the original source of the SyntaxError
+    console.log('[DEBUG submit] about to POST', { taskId, href: window.location.href });
 
     try {
+      if (!taskId || typeof taskId !== 'string') {
+        throw new Error(`Invalid taskId: ${String(taskId)}`);
+      }
+      if (!content?.questions?.length) {
+        throw new Error('No questions to submit');
+      }
+      if (isSubmitting) {
+        console.log('[Practice] Already submitting, ignoring duplicate call');
+        return;
+      }
+
+      setIsSubmitting(true);
+      setIsSubmitted(true);
+
       const now = Date.now();
-      const payload: AttemptSubmitPayload = {
-        startedAt: new Date(sessionStartRef.current).toISOString(),
+      const startedAtMs = sessionStartRef.current ?? now; // guard against undefined
+      const payload = {
+        startedAt: new Date(startedAtMs).toISOString(),
         submittedAt: new Date(now).toISOString(),
-        durationMs: now - sessionStartRef.current,
-        answers: questions.map(q => ({
-          questionId: q.id,
+        durationMs: now - startedAtMs,
+        answers: content.questions.map((q: any) => ({
+          questionId: String(q.id),
           pickedOptionId: answers[q.id] ?? null,
-          // Optional: add timeMs and replayCountAtAnswer if tracked
         })),
       };
 
-      console.log('[Practice] Submitting attempt:', {
-        taskId,
-        answersCount: payload.answers.length,
-        durationMs: payload.durationMs
-      });
+      // DEBUG: log the exact URL and payload BEFORE posting
+      const attemptPath = `/api/firebase/task-progress/${encodeURIComponent(taskId)}/attempt`;
+      console.log('[Practice][submit] path', attemptPath, 'payload', payload);
 
-      const response = await getFreshWithAuth(
-        `/api/firebase/task-progress/${taskId}/attempt`,
-        getToken,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(payload),
-        }
-      );
+      const res = await postJsonWithAuth(attemptPath, getToken, payload);
 
-      const data = await response.json();
-      
+      // If server returns non-JSON HTML/XML, parse() throws a different, clear error
+      const ct = res.headers.get('content-type') ?? '';
+      console.log('[Practice][submit] status', res.status, 'ct', ct);
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`Attempt POST failed: ${res.status} ${res.statusText} — ${text.slice(0, 300)}`);
+      }
+
+      const data = await res.json();
       if (!data?.success) {
-        throw new Error(data?.message ?? 'Failed to submit attempt');
+        throw new Error(data?.message ?? 'Submit failed');
       }
 
       console.log('[Practice] Attempt submitted successfully:', {
@@ -607,7 +617,6 @@ export default function Practice() {
         score: data.score
       });
 
-      // Store results for UI display
       setScoreSummary(data.score);
       setDetailedResults(data.detailed);
       setShowResults(true);
@@ -617,11 +626,12 @@ export default function Practice() {
         description: `You scored ${data.score.correct} out of ${data.score.total} (${data.score.percent}%)`,
       });
 
-    } catch (error: any) {
-      console.error('[Practice] Submit error:', error);
+    } catch (err: any) {
+      console.error('[Practice] Submit error:', err);
+      setShowResults(false);
       toast({
         title: "Submission Error", 
-        description: error.message || "Failed to save your answers. Please try again.",
+        description: err?.message || String(err) || "Failed to save your answers. Please try again.",
         variant: "destructive",
       });
       setIsSubmitting(false);
