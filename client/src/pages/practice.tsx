@@ -262,9 +262,7 @@ const LegacyPracticeLayout = ({
   day,
   accentLabel,
   audioUrl,
-  transcript,
   replayCount,
-  onToggleTranscript,
   questionsBlock,
 }: {
   title: string;
@@ -272,9 +270,7 @@ const LegacyPracticeLayout = ({
   day?: string | number;
   accentLabel?: string;
   audioUrl?: string | null;
-  transcript?: string | null;
   replayCount?: number;
-  onToggleTranscript?: () => void;
   questionsBlock?: React.ReactNode;
 }) => (
   <div className="container mx-auto px-4 py-6">
@@ -305,11 +301,7 @@ const LegacyPracticeLayout = ({
       </div>
 
       <div className="p-4">
-        <button className="text-sm text-gray-700 underline" onClick={onToggleTranscript}>
-          Show transcript
-        </button>
-
-        <div className="mt-3">
+        <div>
           <audio controls preload="metadata" src={audioUrl ?? ""} className="w-full" />
         </div>
 
@@ -317,10 +309,6 @@ const LegacyPracticeLayout = ({
           <div>{typeof replayCount === "number" ? `${replayCount} replays remaining` : null}</div>
           <div>{accentLabel ? accentLabel.replace(" Accent", "").toLowerCase() + " accent" : null}</div>
         </div>
-
-        {transcript && (
-          <div className="mt-4 p-3 bg-gray-50 rounded text-sm whitespace-pre-wrap">{transcript}</div>
-        )}
       </div>
     </div>
 
@@ -410,7 +398,6 @@ export default function Practice() {
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [isSubmitted, setIsSubmitted] = useState(false);
-  const [showTranscript, setShowTranscript] = useState(false);
 
   // Session tracking and attempt submission
   const sessionStartRef = useRef<number>(Date.now());
@@ -435,7 +422,6 @@ export default function Practice() {
       ? `${content.scenario}: ${content.conversationType}`
       : content?.title) ?? routeQueryTitle ?? 'Listening Practice';
 
-  const transcript = content?.scriptText ?? '';
   const audioSrc = content?.audioUrl ?? '';
   const questions = Array.isArray(content?.questions) ? content.questions : [];
 
@@ -851,9 +837,7 @@ export default function Practice() {
       day={(params as any)?.day}
       accentLabel={content?.accent ? `${content.accent} Accent` : undefined}
       audioUrl={content?.audioUrl ?? null}
-      transcript={showTranscript ? (content?.scriptText ?? null) : null}
       replayCount={typeof content?.replayLimit === "number" ? content.replayLimit : undefined}
-      onToggleTranscript={() => setShowTranscript(!showTranscript)}
       questionsBlock={questionsBlock}
     />
   );

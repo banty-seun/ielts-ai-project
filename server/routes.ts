@@ -391,16 +391,39 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
         });
       }
       
-      // Update the task with generated content
+      // Import title builder
+      const { makeListeningTaskTitle, needsTitleUpdate } = require('./services/title');
+      
+      // Generate dynamic title if needed
+      let updatedTitle = task.taskTitle;
+      if (needsTitleUpdate(task.taskTitle) && scriptResult.contextLabel) {
+        updatedTitle = makeListeningTaskTitle({
+          scriptType: scriptResult.scriptType,
+          contextLabel: scriptResult.contextLabel,
+          topicDomain: scriptResult.topicDomain,
+          scenarioOverview: scriptResult.scenarioOverview
+        });
+        console.log(`[Script Generation API] Updated title from "${task.taskTitle}" to "${updatedTitle}"`);
+      }
+      
+      // Update the task with generated content and metadata (no taskTitle in updateTaskContent)
       const updateData = {
         scriptText: scriptResult.scriptText!,
         accent: scriptResult.accent!,
         scriptType: scriptResult.scriptType!,
         difficulty: scriptResult.difficulty!,
-        duration: scriptResult.estimatedDuration!
+        duration: scriptResult.estimatedDurationSec || 180,
+        ieltsPart: scriptResult.ieltsPart,
+        topicDomain: scriptResult.topicDomain,
+        contextLabel: scriptResult.contextLabel,
+        scenarioOverview: scriptResult.scenarioOverview,
+        estimatedDurationSec: scriptResult.estimatedDurationSec
       };
       
       const updatedTask = await storage.updateTaskContent(taskId, updateData);
+      
+      // Note: Task title is updated in the task progress table via updateTaskContent
+      // The title is part of the task progress record, not the weekly plan
       
       // Update task status to indicate script is generated
       await storage.updateTaskStatus(taskId, "script-generated");
@@ -416,7 +439,7 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
           accent: scriptResult.accent,
           scriptType: scriptResult.scriptType,
           difficulty: scriptResult.difficulty,
-          estimatedDuration: scriptResult.estimatedDuration,
+          estimatedDuration: scriptResult.estimatedDurationSec,
           wordCount: scriptResult.scriptText!.split(/\s+/).length,
           status: "script-generated"
         }
@@ -987,17 +1010,44 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
           );
           
           if (scriptResult && scriptResult.success && scriptResult.scriptText && scriptResult.scriptText.trim().length > 0) {
-            // Update task with generated script
+            // Import title builder
+            const { makeListeningTaskTitle, needsTitleUpdate } = require('./services/title');
+            
+            // Generate dynamic title if needed
+            let updatedTitle = taskWithContent.taskTitle;
+            if (needsTitleUpdate(taskWithContent.taskTitle) && scriptResult.contextLabel) {
+              updatedTitle = makeListeningTaskTitle({
+                scriptType: scriptResult.scriptType,
+                contextLabel: scriptResult.contextLabel,
+                topicDomain: scriptResult.topicDomain,
+                scenarioOverview: scriptResult.scenarioOverview
+              });
+              console.log(`[Pipeline Stage 1] Updated title from "${taskWithContent.taskTitle}" to "${updatedTitle}"`);
+            }
+            
+            // Update task with generated script and metadata
             await storage.updateTaskContent(id, {
               scriptText: scriptResult.scriptText,
-              scriptType: 'listening',
-              difficulty: 'intermediate'
+              scriptType: scriptResult.scriptType || 'dialogue',
+              difficulty: scriptResult.difficulty || 'intermediate',
+              accent: scriptResult.accent,
+              ieltsPart: scriptResult.ieltsPart,
+              topicDomain: scriptResult.topicDomain,
+              contextLabel: scriptResult.contextLabel,
+              scenarioOverview: scriptResult.scenarioOverview,
+              estimatedDurationSec: scriptResult.estimatedDurationSec
             });
             
-            // Update the task object to return the new script
-            taskWithContent.scriptText = scriptResult.scriptText;
-            taskWithContent.scriptType = 'listening';
-            taskWithContent.difficulty = 'intermediate';
+            // Update the task object with new metadata (but not scriptText for API response)
+            taskWithContent.taskTitle = updatedTitle;
+            taskWithContent.scriptType = scriptResult.scriptType || 'dialogue';
+            taskWithContent.difficulty = scriptResult.difficulty || 'intermediate';
+            taskWithContent.accent = scriptResult.accent || null;
+            taskWithContent.ieltsPart = scriptResult.ieltsPart || null;
+            taskWithContent.topicDomain = scriptResult.topicDomain || null;
+            taskWithContent.contextLabel = scriptResult.contextLabel || null;
+            taskWithContent.scenarioOverview = scriptResult.scenarioOverview || null;
+            taskWithContent.estimatedDurationSec = scriptResult.estimatedDurationSec || null;
             
             console.log(`[Pipeline Stage 1] ✅ Script generation completed for task ${id} (${scriptResult.scriptText.length} chars)`);
           } else {
@@ -1115,13 +1165,21 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
         taskWithContent.questions = normalizeQuestionsForClient(taskWithContent.questions);
       }
 
+      // Remove scriptText from API response (keep it in DB but don't expose to client)
+      if (taskWithContent.scriptText !== undefined) {
+        taskWithContent.scriptText = undefined;
+      }
+      
       // Log final payload keys before response
       console.log(`[Task Content API] Final response payload keys for ${id}:`, {
         hasTaskContent: !!taskWithContent,
-        hasScriptText: !!taskWithContent.scriptText,
+        hasScriptText: false, // Explicitly removed from response
         hasAudioUrl: !!taskWithContent.audioUrl,
         questionsCount: Array.isArray(taskWithContent.questions) ? taskWithContent.questions.length : 0,
-        taskTitle: taskWithContent.taskTitle
+        taskTitle: taskWithContent.taskTitle,
+        ieltsPart: taskWithContent.ieltsPart,
+        contextLabel: taskWithContent.contextLabel,
+        topicDomain: taskWithContent.topicDomain
       });
       
       return res.status(200).json({

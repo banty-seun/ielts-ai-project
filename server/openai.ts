@@ -766,6 +766,24 @@ Do not include Reading, Writing, or Speaking practice — this prompt is only fo
  * @param targetBand - Target band score (from onboarding)
  * @returns Generated script content
  */
+// IELTS Script System Prompt for dynamic, part-free titles
+export const IELTS_SCRIPT_SYSTEM_PROMPT = `
+You are an IELTS Listening tutor. Generate a realistic script strictly aligned with IELTS listening contexts.
+Return JSON ONLY in this exact shape:
+
+{
+  "script": "Full script text.",
+  "scriptType": "dialogue" | "monologue",
+  "topicDomain": "short domain label, e.g. 'Office', 'Service Call', 'Museum', 'Classroom', 'Academic Lecture'",
+  "contextLabel": "1–3 word noun phrase for display (title base). Reuse topicDomain if appropriate.",
+  "scenarioOverview": "1–2 sentences summarizing the situation and goal",
+  "accent": "British" | "American" | "Canadian" | "Australian" | "NewZealand",
+  "estimatedDurationSec": number,
+  "ieltsPart": 1 | 2 | 3 | 4
+}
+No commentary. JSON only.
+`;
+
 export async function generateListeningScriptForTask(
   task: TaskProgress,
   userLevel: number,
@@ -775,8 +793,12 @@ export async function generateListeningScriptForTask(
   scriptText?: string;
   accent?: string;
   scriptType?: string;
+  ieltsPart?: number;
+  topicDomain?: string;
+  contextLabel?: string;
+  scenarioOverview?: string;
+  estimatedDurationSec?: number;
   difficulty?: string;
-  estimatedDuration?: number;
   error?: string;
 }> {
   try {
@@ -788,30 +810,21 @@ export async function generateListeningScriptForTask(
       };
     }
 
-    // Default accent to British if not specified
-    const accent = task.accent || "British";
+    // Create user prompt with task details
+    const userPrompt = `Create an IELTS listening script for: "${task.taskTitle}". 
     
-    // Extract task description from progressData if available  
-    const progressData = task.progressData as Record<string, any> | null;
-    const taskDescription = progressData?.description || "practice listening comprehension";
+Requirements:
+- Pick ONE IELTS Listening Part format (1-4)
+- Pick ONE topic domain aligned with IELTS topics
+- Language level should be appropriate for Band ${targetBand} learners (current level Band ${userLevel})
+- Target duration 1–3 minutes when spoken aloud
+- You MUST choose a valid IELTS part and a topic domain per the system instructions and return the JSON only.`;
 
-    // Create the system prompt for IELTS script generation
-    const systemPrompt = `You are an IELTS Listening tutor. Create a realistic, goal-driven listening script for a learner at Band ${userLevel}, targeting Band ${targetBand}. The topic is: "${task.taskTitle}".
-
-🎧 Accent: ${accent}
-🧠 Goal: Help the learner practice listening for ${taskDescription}.
-🗓️ This is Week ${task.weekNumber} of a structured plan.
-
-The script should reflect IELTS listening formats (e.g. conversations, lectures), include rewording/distractors, and take 1–3 minutes to speak aloud.
-
-Please respond with a JSON object in this format:
-{
-  "script": "Your generated script text here",
-  "type": "dialogue" or "monologue",
-  "difficulty": "Band X.X" (estimate based on vocabulary and complexity)
-}
-
-Only return the JSON object — no additional explanation.`;
+    console.log(`[Script Generation] Generating IELTS script for "${task.taskTitle}":`, {
+      userLevel,
+      targetBand,
+      weekNumber: task.weekNumber
+    });
 
     // Generate the script using GPT-4o Mini
     const response = await openai.chat.completions.create({
@@ -819,14 +832,14 @@ Only return the JSON object — no additional explanation.`;
       messages: [
         {
           role: "system",
-          content: systemPrompt
+          content: IELTS_SCRIPT_SYSTEM_PROMPT
         },
         {
           role: "user",
-          content: `Generate an IELTS listening script for: ${task.taskTitle}`
+          content: userPrompt
         }
       ],
-      max_tokens: 1000, // Increased for JSON response
+      max_tokens: 1500, // Increased for complete script
       temperature: 0.7, // Balanced creativity and consistency
       response_format: { type: "json_object" }, // Ensure JSON response
     });
@@ -843,55 +856,43 @@ Only return the JSON object — no additional explanation.`;
     try {
       // Parse the JSON response
       const parsedResponse = JSON.parse(responseContent);
-      const scriptText = parsedResponse.script;
-      const scriptType = parsedResponse.type;
-      const difficulty = parsedResponse.difficulty;
-
-      if (!scriptText) {
+      
+      if (!parsedResponse.script) {
         return {
           success: false,
           error: "No script content in OpenAI response"
         };
       }
 
-      // Estimate duration based on word count (average speaking rate: 150-180 words/minute)
-      const wordCount = scriptText.split(/\s+/).length;
-      const estimatedDuration = Math.ceil(wordCount / 165); // Conservative estimate in minutes
-
-      console.log(`[Script Generation] Generated script for "${task.taskTitle}":`, {
-        wordCount,
-        estimatedDuration: `${estimatedDuration} minutes`,
-        accent,
-        scriptType,
-        difficulty,
-        weekNumber: task.weekNumber
+      console.log(`[Script Generation] Generated IELTS script:`, {
+        ieltsPart: parsedResponse.ieltsPart,
+        topicDomain: parsedResponse.topicDomain,
+        contextLabel: parsedResponse.contextLabel,
+        accent: parsedResponse.accent,
+        scriptType: parsedResponse.scriptType,
+        estimatedDurationSec: parsedResponse.estimatedDurationSec
       });
 
       return {
         success: true,
-        scriptText,
-        accent,
-        scriptType,
-        difficulty,
-        estimatedDuration: estimatedDuration * 60 // Convert to seconds for database
+        scriptText: parsedResponse.script,
+        accent: parsedResponse.accent || "British",
+        scriptType: parsedResponse.scriptType || "dialogue",
+        ieltsPart: parsedResponse.ieltsPart,
+        topicDomain: parsedResponse.topicDomain,
+        contextLabel: parsedResponse.contextLabel,
+        scenarioOverview: parsedResponse.scenarioOverview,
+        estimatedDurationSec: parsedResponse.estimatedDurationSec,
+        difficulty: `Band ${targetBand}` // Maintain for compatibility
       };
 
     } catch (parseError) {
       console.error("[Script Generation] Failed to parse JSON response:", parseError);
       console.error("[Script Generation] Raw response:", responseContent);
       
-      // Fallback: Try to extract script from plain text if JSON parsing fails
-      const scriptText = responseContent;
-      const wordCount = scriptText.split(/\s+/).length;
-      const estimatedDuration = Math.ceil(wordCount / 165);
-
       return {
-        success: true,
-        scriptText,
-        accent,
-        scriptType: "monologue", // Default fallback
-        difficulty: `Band ${targetBand}`, // Default fallback
-        estimatedDuration: estimatedDuration * 60
+        success: false,
+        error: "Failed to parse script generation response"
       };
     }
 

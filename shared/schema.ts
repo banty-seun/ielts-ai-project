@@ -82,6 +82,13 @@ export const taskProgress = pgTable("task_progress", {
   scriptType: varchar("script_type", { length: 20 }), // Type of script: "dialogue" or "monologue"
   difficulty: varchar("difficulty", { length: 20 }), // Difficulty level: e.g. "Band 6.5"
   
+  // IELTS-specific metadata for dynamic titles
+  ieltsPart: integer("ielts_part"), // IELTS Part 1-4 (analytics only, never in titles)
+  topicDomain: varchar("topic_domain", { length: 100 }), // e.g., 'Office', 'Museum', 'Academic Lecture'
+  contextLabel: varchar("context_label", { length: 100 }), // 1-3 word noun phrase for title building
+  scenarioOverview: text("scenario_overview"), // 1-2 sentences summarizing the situation
+  estimatedDurationSec: integer("estimated_duration_sec"), // Estimated duration in seconds
+  
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -120,6 +127,7 @@ export const onboardingSchema = z.object({
     dailyCommitment: z.enum(["30mins", "1hour", "2hours+"]),
     schedule: z.enum(["weekday", "weekend", "both"]),
     style: z.enum(["ai-guided", "self-paced", "mixed"]),
+    sessionMinutes: z.number().min(5).max(120).optional(), // Minutes per practice session (5-120)
   }),
   weekNumber: z.number().optional(), // Optional week number for weekly plan generation
 });
@@ -213,4 +221,9 @@ export const taskContentUpdateSchema = z.object({
   replayLimit: z.number().optional(),
   scriptType: z.string().optional(),
   difficulty: z.string().optional(),
+  ieltsPart: z.number().optional(),
+  topicDomain: z.string().optional(),
+  contextLabel: z.string().optional(),
+  scenarioOverview: z.string().optional(),
+  estimatedDurationSec: z.number().optional(),
 });

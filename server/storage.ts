@@ -585,6 +585,34 @@ export class DatabaseStorage implements IStorage {
       updateData.replayLimit = contentUpdate.replayLimit;
     }
     
+    if (contentUpdate.scriptType !== undefined) {
+      updateData.scriptType = contentUpdate.scriptType;
+    }
+    
+    if (contentUpdate.difficulty !== undefined) {
+      updateData.difficulty = contentUpdate.difficulty;
+    }
+    
+    if (contentUpdate.ieltsPart !== undefined) {
+      updateData.ieltsPart = contentUpdate.ieltsPart;
+    }
+    
+    if (contentUpdate.topicDomain !== undefined) {
+      updateData.topicDomain = contentUpdate.topicDomain;
+    }
+    
+    if (contentUpdate.contextLabel !== undefined) {
+      updateData.contextLabel = contentUpdate.contextLabel;
+    }
+    
+    if (contentUpdate.scenarioOverview !== undefined) {
+      updateData.scenarioOverview = contentUpdate.scenarioOverview;
+    }
+    
+    if (contentUpdate.estimatedDurationSec !== undefined) {
+      updateData.estimatedDurationSec = contentUpdate.estimatedDurationSec;
+    }
+    
     // Perform the update
     const [updatedTask] = await db
       .update(taskProgress)
