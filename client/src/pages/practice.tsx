@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useRoute, Link as WouterLink, useLocation } from 'wouter';
-import { ChevronLeft, Play, Pause, RotateCcw, Volume2, AlignLeft, CheckCircle, XCircle } from 'lucide-react';
+import { ChevronLeft, Play, Pause, RotateCcw, Volume2, AlignLeft, CheckCircle, XCircle, Clock } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -19,6 +19,9 @@ import { useFirebaseAuthContext } from '@/contexts/FirebaseAuthContext';
 import { QuotaErrorAlert } from '@/components/QuotaErrorAlert';
 import { queryClient } from '@/lib/queryClient';
 import { getFreshWithAuth, postJsonWithAuth } from '@/lib/apiClient';
+import { useOnboardingStatus } from '@/hooks/useOnboardingStatus';
+import { useAuth } from '@/hooks/useAuth';
+import { DEFAULT_SESSION_MINUTES, NEXT_MIN_MS, SESSION_START_KEY, msToMMSS } from '@shared/constants';
 
 // Debug toggle
 const DEBUG = Boolean((window as any).__DEBUG__);
@@ -177,7 +180,7 @@ const FillInTheGapQuestion = ({
 };
 
 // Page shell component for consistent layout
-const PageShell = ({ children }: { children: React.ReactNode }) => (
+const PageShell = ({ children, timerDisplay }: { children: React.ReactNode; timerDisplay?: React.ReactNode }) => (
   <ProtectedRoute>
     <div className="min-h-screen bg-gray-50">
       <div className="bg-white border-b border-gray-200">
@@ -187,6 +190,7 @@ const PageShell = ({ children }: { children: React.ReactNode }) => (
               <ChevronLeft className="h-5 w-5 mr-2" />
               Back to Dashboard
             </WouterLink>
+            {timerDisplay}
           </div>
         </div>
       </div>
@@ -264,6 +268,7 @@ const LegacyPracticeLayout = ({
   audioUrl,
   replayCount,
   questionsBlock,
+  timerDisplay,
 }: {
   title: string;
   week?: string | number;
@@ -272,12 +277,13 @@ const LegacyPracticeLayout = ({
   audioUrl?: string | null;
   replayCount?: number;
   questionsBlock?: React.ReactNode;
+  timerDisplay?: React.ReactNode;
 }) => (
   <div className="container mx-auto px-4 py-6">
     {/* Top bar */}
     <div className="flex items-center justify-between mb-6">
       <a href="/" className="text-sm text-gray-600 hover:text-gray-900">&larr; Back to Dashboard</a>
-      <div className="text-sm text-gray-500">Session time: <span>—</span></div>
+      {timerDisplay || <div className="text-sm text-gray-500">Session time: <span>—</span></div>}
     </div>
 
     {/* Title + chips */}
@@ -319,9 +325,11 @@ const LegacyPracticeLayout = ({
 
 export default function Practice() {
   const [, params] = useRoute('/practice/:week/:day');
-  const [location] = useLocation();
+  const [location, setLocation] = useLocation();
   const { toast } = useToast();
   const isMobile = useIsMobile();
+  const { user } = useAuth();
+  const { preferences, isLoading: onboardingLoading } = useOnboardingStatus();
   
   const DEBUG = true;
   
@@ -403,6 +411,12 @@ export default function Practice() {
   const sessionStartRef = useRef<number>(Date.now());
   const [submitting, setSubmitting] = useState(false);
   const [results, setResults] = useState<AttemptResponse | null>(null);
+  
+  // Session timer state
+  const [sessionStartMs, setSessionStartMs] = useState<number | null>(null);
+  const [remainingMs, setRemainingMs] = useState<number | null>(null);
+  const [timerFrozen, setTimerFrozen] = useState(false);
+  const [creatingNext, setCreatingNext] = useState(false);
 
   // Firebase auth context
   const { getToken } = useFirebaseAuthContext();
@@ -414,6 +428,54 @@ export default function Practice() {
     startedRef.current = taskId;
     void startTask({ taskId });
   }, [taskId]);
+  
+  // Session timer logic
+  const sessionMinutes = preferences?.sessionMinutes ?? DEFAULT_SESSION_MINUTES;
+  const sessionMsTotal = sessionMinutes * 60 * 1000;
+  
+  // Initialize session start time from localStorage
+  useEffect(() => {
+    if (!taskId || !user?.id) return;
+    
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const storageKey = SESSION_START_KEY(user.id, today);
+    const stored = localStorage.getItem(storageKey);
+    
+    if (stored) {
+      const startMs = parseInt(stored, 10);
+      setSessionStartMs(startMs);
+      console.log('[SESSION][start]', { sessionStartMs: startMs, source: 'storage' });
+    } else {
+      const now = Date.now();
+      localStorage.setItem(storageKey, now.toString());
+      setSessionStartMs(now);
+      console.log('[SESSION][start]', { sessionStartMs: now, source: 'new' });
+    }
+    
+    console.log('[SESSION][config]', { sessionMinutes, sessionMsTotal });
+  }, [taskId, user?.id, sessionMinutes, sessionMsTotal]);
+  
+  // Update remaining time every second
+  useEffect(() => {
+    if (!sessionStartMs || timerFrozen) return;
+    
+    const updateRemaining = () => {
+      const now = Date.now();
+      const elapsed = now - sessionStartMs;
+      const remaining = Math.max(0, sessionMsTotal - elapsed);
+      setRemainingMs(remaining);
+      
+      // Log every 10 seconds
+      if (Math.floor(elapsed / 1000) % 10 === 0) {
+        console.log('[SESSION][tick]', { remainingMs: remaining });
+      }
+    };
+    
+    updateRemaining(); // Initial update
+    const interval = setInterval(updateRemaining, 1000);
+    
+    return () => clearInterval(interval);
+  }, [sessionStartMs, sessionMsTotal, timerFrozen]);
 
   // Title derivation stays here, single source of truth
   const routeQueryTitle = new URLSearchParams(location.split('?')[1] || '').get('title') ?? undefined;
@@ -618,11 +680,55 @@ export default function Practice() {
       });
 
       setResults(data);
+      setTimerFrozen(true); // Freeze the timer after submission
 
       toast({
         title: "Practice Complete!",
         description: `You scored ${data.score.correct} out of ${data.score.total} (${data.score.percent}%)`,
       });
+      
+      // Log submission with remaining time
+      const currentRemainingMs = remainingMs ?? 0;
+      console.log('[SUBMIT][done]', { 
+        score: data.score, 
+        remainingMs: currentRemainingMs 
+      });
+      
+      // Auto-create next task if enough time remains
+      if (currentRemainingMs >= NEXT_MIN_MS && taskId && progressId) {
+        try {
+          setCreatingNext(true);
+          console.log('[NEXT][client:req]', { progressId, taskId, remainingMs: currentRemainingMs });
+          
+          const nextRes = await postJsonWithAuth('/api/session/next-listening-task', getToken, {
+            progressId,
+            taskId,
+            remainingMs: currentRemainingMs
+          });
+          
+          const nextData = await nextRes.json();
+          console.log('[NEXT][client:res]', nextData);
+          
+          if (nextData.ok) {
+            console.log('[NEXT][client:nav]', nextData);
+            // Navigate to the new task
+            setLocation(`/practice/${nextData.taskId}?progressId=${nextData.progressId}`);
+          } else if (nextData.reason === 'time_exhausted') {
+            // Session complete - show in UI
+            console.log('[NEXT][client:session_complete]', 'Not enough time for next task');
+          }
+        } catch (nextErr) {
+          console.error('[NEXT][client:error]', nextErr);
+          toast({
+            title: "Note",
+            description: "Couldn't create next practice. Your session is saved.",
+          });
+        } finally {
+          setCreatingNext(false);
+        }
+      } else {
+        console.log('[NEXT][client:session_complete]', 'Session complete or missing IDs');
+      }
 
     } catch (err: any) {
       console.error('[Practice] Submit error:', err);
@@ -830,6 +936,21 @@ export default function Practice() {
     </div>
   );
 
+  // Timer display component
+  const timerDisplay = remainingMs !== null ? (
+    <div className="flex items-center gap-2 text-sm">
+      <Clock className="h-4 w-4 text-gray-500" />
+      <span className={cn(
+        "font-mono",
+        timerFrozen ? "text-gray-400" : remainingMs < 60000 ? "text-red-600" : "text-gray-600"
+      )}>
+        {msToMMSS(remainingMs)}
+      </span>
+      {timerFrozen && <span className="text-xs text-gray-400">(frozen)</span>}
+      {creatingNext && <span className="text-xs text-blue-600">Creating next task...</span>}
+    </div>
+  ) : null;
+
   return (
     <LegacyPracticeLayout
       title={title}
@@ -839,6 +960,7 @@ export default function Practice() {
       audioUrl={content?.audioUrl ?? null}
       replayCount={typeof content?.replayLimit === "number" ? content.replayLimit : undefined}
       questionsBlock={questionsBlock}
+      timerDisplay={timerDisplay}
     />
   );
 }

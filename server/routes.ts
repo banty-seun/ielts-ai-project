@@ -926,12 +926,41 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
         });
       }
       
-      // Return the onboarding status
+      // Get the latest study plan to include preferences
+      let preferences: any = {};
+      const { DEFAULT_SESSION_MINUTES } = require('../shared/constants');
+      
+      try {
+        const studyPlans = await storage.getStudyPlansByUserId(userId);
+        const latestPlan = studyPlans.length > 0 ? studyPlans[studyPlans.length - 1] : null;
+        if (latestPlan && latestPlan.studyPreferences) {
+          const prefs = latestPlan.studyPreferences as any;
+          preferences = {
+            sessionMinutes: prefs.sessionMinutes ?? DEFAULT_SESSION_MINUTES,
+            dailyCommitment: prefs.dailyCommitment,
+            schedule: prefs.schedule,
+            style: prefs.style
+          };
+        } else {
+          preferences = {
+            sessionMinutes: DEFAULT_SESSION_MINUTES
+          };
+        }
+        console.log('[SESSION][config]', { sessionMinutes: preferences.sessionMinutes });
+      } catch (error) {
+        console.warn('[Onboarding API] Could not fetch study preferences:', error);
+        preferences = {
+          sessionMinutes: DEFAULT_SESSION_MINUTES
+        };
+      }
+      
+      // Return the onboarding status with preferences
       return res.status(200).json({
         success: true,
         onboardingCompleted: user.onboardingCompleted || false,
         userId: user.id,
         firebaseUid: user.firebaseUid,
+        preferences,
         source: 'database'
       });
     } catch (error: any) {
@@ -1376,6 +1405,133 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
       return res.status(500).json({ 
         success: false, 
         message: err?.message ?? 'Server error processing attempt submission' 
+      });
+    }
+  });
+
+  // Create next listening task during a session (Firebase Auth version)
+  app.post('/api/session/next-listening-task', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    try {
+      const userId = req.user.id;
+      const { progressId, taskId, remainingMs } = req.body;
+      
+      // Import constants
+      const { NEXT_MIN_MS } = require('../shared/constants');
+      
+      // Validate remaining time
+      if (remainingMs < NEXT_MIN_MS) {
+        console.log('[NEXT][server]', { userId, fromProgressId: progressId, remainingMs, ok: false, reason: 'time_exhausted' });
+        return res.status(200).json({
+          ok: false,
+          reason: 'time_exhausted'
+        });
+      }
+      
+      // Verify user owns the progressId
+      const currentTask = await storage.getTaskProgress(progressId);
+      if (!currentTask || currentTask.userId !== userId) {
+        return res.status(403).json({
+          ok: false,
+          reason: 'access_denied'
+        });
+      }
+      
+      // Create follow-up task
+      const { createFollowUpListeningTask } = require('./services/taskFactory');
+      const result = await createFollowUpListeningTask({
+        userId,
+        from: { progressId, taskId }
+      });
+      
+      console.log('[NEXT][server]', { userId, fromProgressId: progressId, remainingMs, ok: true, ...result });
+      
+      // Trigger the 3-stage pipeline asynchronously
+      (async () => {
+        try {
+          const newTask = await storage.getTaskProgress(result.progressId);
+          if (!newTask) return;
+          
+          // Get user's target band and skill level
+          const studyPlans = await storage.getStudyPlansByUserId(userId);
+          const latestPlan = studyPlans.length > 0 ? studyPlans[studyPlans.length - 1] : null;
+          
+          if (!latestPlan) {
+            console.error('[NEXT][pipeline] No study plan found for user');
+            return;
+          }
+          
+          const skillRatings = latestPlan.skillRatings as Record<string, number>;
+          const userLevel = skillRatings?.listening || 1;
+          const targetBand = parseFloat(latestPlan.targetBandScore) || 7;
+          
+          // Stage 1: Generate script
+          console.log('[NEXT][pipeline] Starting script generation');
+          const scriptResult = await generateListeningScriptForTask(newTask, userLevel, targetBand);
+          
+          if (scriptResult.success && scriptResult.scriptText) {
+            await storage.updateTaskContent(result.progressId, {
+              scriptText: scriptResult.scriptText,
+              accent: scriptResult.accent!,
+              scriptType: scriptResult.scriptType!,
+              difficulty: scriptResult.difficulty!,
+              duration: scriptResult.estimatedDurationSec || 180,
+              ieltsPart: scriptResult.ieltsPart,
+              topicDomain: scriptResult.topicDomain,
+              contextLabel: scriptResult.contextLabel,
+              scenarioOverview: scriptResult.scenarioOverview,
+              estimatedDurationSec: scriptResult.estimatedDurationSec
+            });
+            
+            // Stage 2: Generate questions
+            console.log('[NEXT][pipeline] Starting question generation');
+            const questionsResult = await generateQuestionsFromScript(
+              scriptResult.scriptText,
+              newTask.taskTitle,
+              scriptResult.difficulty || 'intermediate'
+            );
+            
+            if (questionsResult.success && questionsResult.questions) {
+              await storage.updateTaskContent(result.progressId, {
+                questions: questionsResult.questions
+              });
+            }
+            
+            // Stage 3: Generate audio
+            console.log('[NEXT][pipeline] Starting audio generation');
+            const audioResult = await generateAudioFromScript(
+              scriptResult.scriptText,
+              scriptResult.accent || 'British',
+              userId,
+              result.progressId,
+              newTask.weekNumber
+            );
+            
+            if (audioResult.success && audioResult.audioUrl) {
+              await storage.updateTaskContent(result.progressId, {
+                audioUrl: audioResult.audioUrl,
+                duration: audioResult.duration
+              });
+            }
+          }
+          
+          console.log('[NEXT][pipeline] Pipeline complete for', result.progressId);
+        } catch (error) {
+          console.error('[NEXT][pipeline] Error:', error);
+        }
+      })();
+      
+      return res.status(200).json({
+        ok: true,
+        progressId: result.progressId,
+        taskId: result.taskId
+      });
+      
+    } catch (error: any) {
+      console.error('[NEXT][server] Error creating next task:', error);
+      return res.status(500).json({
+        ok: false,
+        reason: 'server_error',
+        message: error.message
       });
     }
   });

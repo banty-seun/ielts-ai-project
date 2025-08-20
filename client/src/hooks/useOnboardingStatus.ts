@@ -8,6 +8,12 @@ interface OnboardingStatusResponse {
   source?: string; // 'session' or 'database'
   userId?: string; // Database user ID 
   firebaseUid?: string; // Firebase UID
+  preferences?: {
+    sessionMinutes: number;
+    dailyCommitment?: string;
+    schedule?: string;
+    style?: string;
+  };
 }
 
 // Create a tracker for this hook
@@ -137,6 +143,7 @@ export function useOnboardingStatus() {
 
   return {
     onboardingCompleted: data?.onboardingCompleted || false,
+    preferences: data?.preferences,
     isLoading,
     error,
   };

@@ -27,7 +27,7 @@ const dashboardTracker = createComponentTracker('Dashboard');
 export default function Dashboard() {
   const { user, isLoading } = useAuth();
   const { currentUser, loading: authLoading } = useFirebaseAuthContext();
-  const { onboardingCompleted, isLoading: onboardingLoading } = useOnboardingStatus();
+  const { onboardingCompleted, preferences, isLoading: onboardingLoading } = useOnboardingStatus();
   const { data: onboardingData, isLoading: onboardingDataLoading } = useUserOnboarding();
   const [, setLocation] = useLocation();
   const [showMobileCoach, setShowMobileCoach] = useState(false);
@@ -484,7 +484,9 @@ export default function Dashboard() {
                 <p className="text-gray-500 flex items-center text-sm">
                   <Calendar className="h-4 w-4 mr-1" /> {format(new Date(), 'EEEE, MMMM d, yyyy')}
                 </p>
-
+                <p className="text-gray-500 flex items-center text-sm">
+                  <Clock className="h-4 w-4 mr-1" /> Session: {preferences?.sessionMinutes ?? 20} minutes
+                </p>
               </div>
             </div>
             <Button className="mt-4 md:mt-0 bg-black text-white hover:bg-gray-800">
