@@ -1,4 +1,4 @@
-import { pgTable, text, varchar, timestamp, jsonb, index, integer, boolean, decimal } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, jsonb, index, integer, boolean, decimal, uuid } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -86,6 +86,22 @@ export const taskProgress = pgTable("task_progress", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
+// Task Attempts table for AI Coach analytics
+export const taskAttempts = pgTable("task_attempts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  taskProgressId: varchar("task_progress_id").notNull().references(() => taskProgress.id),
+  userId: varchar("user_id").notNull().references(() => users.id),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+  submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull(),
+  durationMs: integer("duration_ms").notNull(),
+  answers: jsonb("answers").$type<TaskAttemptAnswer[]>().notNull(),
+  score: jsonb("score").$type<{correct: number; total: number; percent: number}>().notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("task_attempts_task_idx").on(table.taskProgressId),
+  index("task_attempts_user_idx").on(table.userId),
+]);
+
 // Schema for validating the onboarding data
 export const onboardingSchema = z.object({
   fullName: z.string().min(2, "Full name is required"),
@@ -117,6 +133,8 @@ export type InsertWeeklyStudyPlan = typeof weeklyStudyPlans.$inferInsert;
 export type TaskProgress = typeof taskProgress.$inferSelect;
 export type InsertTaskProgress = typeof taskProgress.$inferInsert;
 export type TaskContentUpdate = z.infer<typeof taskContentUpdateSchema>;
+export type TaskAttemptSelect = typeof taskAttempts.$inferSelect;
+export type InsertTaskAttempt = typeof taskAttempts.$inferInsert;
 
 // Question types for type safety
 export interface QuestionOption {
@@ -130,6 +148,28 @@ export interface Question {
   options?: QuestionOption[];
   correctAnswer?: string;
   explanation?: string;
+}
+
+// Task Attempt types for AI Coach analytics
+export interface TaskAttemptAnswer {
+  questionId: string;
+  pickedOptionId: string | null;
+  correctOptionId: string | null;
+  isCorrect: boolean;
+  timeMs?: number;
+  replayCountAtAnswer?: number;
+  explanationShown?: boolean;
+}
+
+export interface TaskAttempt {
+  id: string;
+  taskProgressId: string;
+  userId: string;
+  startedAt: string;
+  submittedAt: string;
+  durationMs: number;
+  answers: TaskAttemptAnswer[];
+  score: { correct: number; total: number; percent: number };
 }
 
 export const insertStudyPlanSchema = createInsertSchema(studyPlans, {

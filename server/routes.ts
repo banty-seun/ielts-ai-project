@@ -1088,7 +1088,7 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
       }
       
       // Optional: Normalize questions for client compatibility
-      function normalizeQuestionsForClient(qs: any[]): any[] {
+      const normalizeQuestionsForClient = (qs: any): any[] => {
         return (Array.isArray(qs) ? qs : []).map((q: any, i: number) => {
           const id = String(q?.id ?? `q${i + 1}`);
           const text = typeof q?.text === 'string' ? q.text : (q?.question ?? '');
@@ -1108,7 +1108,7 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
             options,
           };
         });
-      }
+      };
 
       // Apply normalization if questions exist
       if (taskWithContent.questions) {
@@ -1120,7 +1120,7 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
         hasTaskContent: !!taskWithContent,
         hasScriptText: !!taskWithContent.scriptText,
         hasAudioUrl: !!taskWithContent.audioUrl,
-        questionsCount: (taskWithContent.questions || []).length,
+        questionsCount: Array.isArray(taskWithContent.questions) ? taskWithContent.questions.length : 0,
         taskTitle: taskWithContent.taskTitle
       });
       
@@ -1169,6 +1169,118 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
         success: false,
         message: "Failed to fetch weekly plans",
         error: error.message
+      });
+    }
+  });
+
+  // POST task attempt submission for AI Coach analytics
+  app.post('/api/firebase/task-progress/:id/attempt', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const userId = req.user.id;
+
+      const { startedAt, submittedAt, durationMs, answers } = req.body ?? {};
+      if (!startedAt || !submittedAt || typeof durationMs !== 'number' || !Array.isArray(answers)) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Invalid attempt payload. Required fields: startedAt, submittedAt, durationMs, answers' 
+        });
+      }
+
+      // Load task content for correctness calculation with ownership validation
+      const task = await storage.getTaskProgressById(id, userId);
+      if (!task) {
+        return res.status(404).json({ 
+          success: false, 
+          message: 'Task not found or access denied' 
+        });
+      }
+
+      console.log(`[Task Attempt API] Processing attempt submission for task ${id}`, {
+        userId,
+        answersCount: answers.length,
+        durationMs
+      });
+
+      // Normalize server questions to calculate correctness
+      const LETTERS = ['A', 'B', 'C', 'D'];
+      const normalizedQs = (Array.isArray(task.questions) ? task.questions : []).map((q: any, qi: number) => {
+        const options = Array.isArray(q.options)
+          ? q.options.map((opt: any, oi: number) =>
+              typeof opt === 'string' 
+                ? { id: `option${oi+1}`, text: opt } 
+                : { id: opt?.id ?? `option${oi+1}`, text: opt?.text ?? '' }
+            )
+          : [];
+        
+        const letter = (q?.correctAnswer ?? '').toString().trim().toUpperCase();
+        const idx = LETTERS.indexOf(letter);
+        const correctOptionId = idx >= 0 && options[idx] ? options[idx].id : null;
+
+        return {
+          id: q?.id ?? `q${qi+1}`,
+          text: q?.text ?? q?.question ?? '',
+          options,
+          correctOptionId,
+          explanation: q?.explanation ?? '',
+        };
+      });
+
+      const byId = new Map(normalizedQs.map(q => [q.id, q]));
+
+      // Calculate detailed results per question
+      const detailed = answers.map((a: any) => {
+        const q = byId.get(a.questionId);
+        const correctOptionId = q?.correctOptionId ?? null;
+        const pickedOptionId = a?.pickedOptionId ?? null;
+        const isCorrect = !!(pickedOptionId && correctOptionId && pickedOptionId === correctOptionId);
+        
+        return {
+          questionId: a.questionId,
+          pickedOptionId,
+          correctOptionId,
+          isCorrect,
+          timeMs: typeof a?.timeMs === 'number' ? a.timeMs : undefined,
+          replayCountAtAnswer: typeof a?.replayCountAtAnswer === 'number' ? a.replayCountAtAnswer : undefined,
+          explanationShown: true, // UI will show explanations after submit
+        };
+      });
+
+      const correct = detailed.filter(d => d.isCorrect).length;
+      const total = detailed.length;
+      const percent = total ? Math.round((correct / total) * 100) : 0;
+
+      const attempt = {
+        id: crypto.randomUUID(),
+        taskProgressId: id,
+        userId,
+        startedAt,
+        submittedAt,
+        durationMs,
+        answers: detailed,
+        score: { correct, total, percent },
+      };
+
+      // Persist attempt to database
+      await storage.insertTaskAttempt(attempt);
+
+      console.log(`[Task Attempt API] Successfully saved attempt ${attempt.id}`, {
+        score: attempt.score,
+        detailedCount: detailed.length
+      });
+
+      return res.json({
+        success: true,
+        attemptId: attempt.id,
+        score: attempt.score,
+        detailed
+      });
+
+    } catch (err: any) {
+      console.error('[POST /task-progress/:id/attempt] error', err);
+      return res.status(500).json({ 
+        success: false, 
+        message: err?.message ?? 'Server error processing attempt submission' 
       });
     }
   });

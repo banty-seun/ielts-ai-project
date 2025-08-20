@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useRoute, Link as WouterLink, useLocation } from 'wouter';
-import { ChevronLeft, Play, Pause, RotateCcw, Volume2, AlignLeft, CheckCircle } from 'lucide-react';
+import { ChevronLeft, Play, Pause, RotateCcw, Volume2, AlignLeft, CheckCircle, XCircle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -18,9 +18,25 @@ import { useTaskContent } from '@/hooks/useTaskContent';
 import { useFirebaseAuthContext } from '@/contexts/FirebaseAuthContext';
 import { QuotaErrorAlert } from '@/components/QuotaErrorAlert';
 import { queryClient } from '@/lib/queryClient';
+import { getFreshWithAuth } from '@/lib/apiClient';
 
 // Debug toggle
 const DEBUG = Boolean((window as any).__DEBUG__);
+
+// Types for attempt submission
+type AttemptAnswerPayload = {
+  questionId: string;
+  pickedOptionId: string | null;
+  timeMs?: number;
+  replayCountAtAnswer?: number;
+};
+
+type AttemptSubmitPayload = {
+  startedAt: string;
+  submittedAt: string;
+  durationMs: number;
+  answers: AttemptAnswerPayload[];
+};
 
 // Question types from API
 // Use normalized types from useTaskContent hook
@@ -84,7 +100,7 @@ const MultipleChoiceQuestion = ({
                   isIncorrect && "text-red-500 font-medium line-through"
                 )}
               >
-                {option.text}
+                {option.label}
               </Label>
               {isCorrect && (
                 <CheckCircle className="h-4 w-4 text-green-500 ml-2" />
@@ -380,6 +396,16 @@ export default function Practice() {
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [showTranscript, setShowTranscript] = useState(false);
 
+  // Session tracking and attempt submission
+  const sessionStartRef = useRef<number>(Date.now());
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showResults, setShowResults] = useState(false);
+  const [scoreSummary, setScoreSummary] = useState<{correct: number; total: number; percent: number} | null>(null);
+  const [detailedResults, setDetailedResults] = useState<any[] | null>(null);
+
+  // Firebase auth context
+  const { getToken } = useFirebaseAuthContext();
+
   // Ensure startTask runs once per taskId
   const startedRef = useRef<string | null>(null);
   useEffect(() => {
@@ -535,8 +561,72 @@ export default function Practice() {
     return questions.every(q => !!answers[q.id]);
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
+    if (!taskId || !questions.length || isSubmitting) return;
+
+    setIsSubmitting(true);
     setIsSubmitted(true);
+
+    try {
+      const now = Date.now();
+      const payload: AttemptSubmitPayload = {
+        startedAt: new Date(sessionStartRef.current).toISOString(),
+        submittedAt: new Date(now).toISOString(),
+        durationMs: now - sessionStartRef.current,
+        answers: questions.map(q => ({
+          questionId: q.id,
+          pickedOptionId: answers[q.id] ?? null,
+          // Optional: add timeMs and replayCountAtAnswer if tracked
+        })),
+      };
+
+      console.log('[Practice] Submitting attempt:', {
+        taskId,
+        answersCount: payload.answers.length,
+        durationMs: payload.durationMs
+      });
+
+      const response = await getFreshWithAuth(
+        `/api/firebase/task-progress/${taskId}/attempt`,
+        getToken,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        }
+      );
+
+      const data = await response.json();
+      
+      if (!data?.success) {
+        throw new Error(data?.message ?? 'Failed to submit attempt');
+      }
+
+      console.log('[Practice] Attempt submitted successfully:', {
+        attemptId: data.attemptId,
+        score: data.score
+      });
+
+      // Store results for UI display
+      setScoreSummary(data.score);
+      setDetailedResults(data.detailed);
+      setShowResults(true);
+
+      toast({
+        title: "Practice Complete!",
+        description: `You scored ${data.score.correct} out of ${data.score.total} (${data.score.percent}%)`,
+      });
+
+    } catch (error: any) {
+      console.error('[Practice] Submit error:', error);
+      toast({
+        title: "Submission Error", 
+        description: error.message || "Failed to save your answers. Please try again.",
+        variant: "destructive",
+      });
+      setIsSubmitting(false);
+      setIsSubmitted(false);
+    }
   };
 
   const calculateScore = (): number => {
@@ -587,7 +677,7 @@ export default function Practice() {
         <div className="mb-6">
           <p className="text-lg mb-4">{currentQuestion.text}</p>
           
-          {currentQuestion.type === 'multiple-choice' && (
+          {currentQuestion.type === 'multiple-choice' && currentQuestion.options && (
             <div className="space-y-2">
               {currentQuestion.options.map((option) => (
                 <label key={option.id} className="flex items-center space-x-3 p-3 border rounded-lg cursor-pointer hover:bg-gray-50">
@@ -605,7 +695,7 @@ export default function Practice() {
             </div>
           )}
           
-          {currentQuestion.type === 'short-answer' && (
+          {(currentQuestion.type === 'fill-in-the-gap' || currentQuestion.type === 'fill-in-multiple-gaps') && (
             <input
               type="text"
               value={answers[currentQuestion.id] || ''}
@@ -638,19 +728,86 @@ export default function Practice() {
           ) : (
             <button
               onClick={handleSubmit}
-              disabled={!areAllQuestionsAnswered()}
+              disabled={!areAllQuestionsAnswered() || isSubmitting}
               className="px-4 py-2 rounded bg-green-600 text-white disabled:opacity-50"
             >
-              Submit
+              {isSubmitting ? "Submitting..." : "Submit"}
             </button>
           )}
         </div>
       </div>
       
-      {isSubmitted && (
+      {/* Results Display */}
+      {showResults && scoreSummary && (
         <div className="mt-6 p-4 bg-green-50 border border-green-200 rounded-lg">
-          <h3 className="font-semibold text-green-800 mb-2">Results</h3>
-          <p className="text-green-700">You scored {calculateScore()} out of {questions.length} questions correctly.</p>
+          <h3 className="font-semibold text-green-800 mb-2">Practice Complete!</h3>
+          <p className="text-green-700 mb-4">
+            You scored {scoreSummary.correct} out of {scoreSummary.total} questions correctly 
+            ({scoreSummary.percent}%)
+          </p>
+          
+          {/* Show detailed explanations */}
+          {detailedResults && detailedResults.length > 0 && (
+            <div className="space-y-4">
+              <h4 className="font-medium text-gray-900">Question Review:</h4>
+              {detailedResults.map((result, index) => {
+                const question = questions.find(q => q.id === result.questionId);
+                const isCorrect = result.isCorrect;
+                
+                return (
+                  <div key={result.questionId} className={cn(
+                    "p-3 rounded border",
+                    isCorrect ? "bg-green-50 border-green-200" : "bg-red-50 border-red-200"
+                  )}>
+                    <div className="flex items-start gap-2">
+                      {isCorrect ? (
+                        <CheckCircle className="h-5 w-5 text-green-600 mt-0.5 flex-shrink-0" />
+                      ) : (
+                        <XCircle className="h-5 w-5 text-red-600 mt-0.5 flex-shrink-0" />
+                      )}
+                      
+                      <div className="flex-1">
+                        <p className="font-medium text-sm">
+                          Question {index + 1}: {question?.text}
+                        </p>
+                        
+                        <div className="mt-2 text-sm text-gray-700">
+                          <div>Your answer: <span className={cn(
+                            "font-medium",
+                            isCorrect ? "text-green-700" : "text-red-700"
+                          )}>
+                            {result.pickedAnswer || "No answer"}
+                          </span></div>
+                          
+                          {!isCorrect && (
+                            <div>Correct answer: <span className="font-medium text-green-700">
+                              {result.correctAnswer}
+                            </span></div>
+                          )}
+                        </div>
+                        
+                        {result.explanation && (
+                          <div className="mt-3 p-2 bg-blue-50 border-l-2 border-blue-300 text-sm">
+                            <div className="font-medium text-blue-900">Explanation:</div>
+                            <div className="text-blue-800 mt-1">{result.explanation}</div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          
+          <div className="mt-4 pt-4 border-t border-green-200">
+            <button
+              onClick={() => window.location.href = "/"}
+              className="px-4 py-2 bg-gray-900 text-white rounded hover:bg-gray-800"
+            >
+              Back to Dashboard
+            </button>
+          </div>
         </div>
       )}
     </div>

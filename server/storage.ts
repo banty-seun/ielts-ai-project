@@ -3,6 +3,7 @@ import {
   studyPlans,
   weeklyStudyPlans,
   taskProgress,
+  taskAttempts,
   type User,
   type UpsertUser,
   type StudyPlan,
@@ -12,7 +13,9 @@ import {
   type TaskProgress,
   type InsertTaskProgress,
   type TaskContentUpdate,
-  type Question
+  type Question,
+  type TaskAttempt,
+  type InsertTaskAttempt
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and } from "drizzle-orm";
@@ -62,6 +65,10 @@ export interface IStorage {
   // Task content operations - new methods for AI-generated content
   getTaskWithContent(id: string): Promise<TaskProgress | undefined>;
   updateTaskContent(id: string, contentUpdate: TaskContentUpdate): Promise<TaskProgress>;
+  
+  // Task attempt operations for AI Coach analytics
+  insertTaskAttempt(attempt: TaskAttempt): Promise<void>;
+  getTaskProgressById(id: string, userId: string): Promise<TaskProgress | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -586,6 +593,44 @@ export class DatabaseStorage implements IStorage {
       .returning();
     
     return updatedTask;
+  }
+  
+  /**
+   * Insert a new task attempt for AI Coach analytics
+   * @param attempt Task attempt data
+   */
+  async insertTaskAttempt(attempt: TaskAttempt): Promise<void> {
+    console.log(`[Storage] Inserting task attempt for task ${attempt.taskProgressId}`, {
+      userId: attempt.userId,
+      score: attempt.score,
+      answerCount: attempt.answers.length
+    });
+    
+    await db.insert(taskAttempts).values({
+      id: attempt.id,
+      taskProgressId: attempt.taskProgressId,
+      userId: attempt.userId,
+      startedAt: new Date(attempt.startedAt),
+      submittedAt: new Date(attempt.submittedAt),
+      durationMs: attempt.durationMs,
+      answers: attempt.answers,
+      score: attempt.score
+    });
+  }
+  
+  /**
+   * Get task progress by ID with ownership validation
+   * @param id Task progress ID
+   * @param userId User ID for ownership check
+   * @returns Task progress or undefined if not found/not owned
+   */
+  async getTaskProgressById(id: string, userId: string): Promise<TaskProgress | undefined> {
+    const [task] = await db
+      .select()
+      .from(taskProgress)
+      .where(and(eq(taskProgress.id, id), eq(taskProgress.userId, userId)));
+    
+    return task || undefined;
   }
 }
 
