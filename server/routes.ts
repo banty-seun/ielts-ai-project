@@ -643,17 +643,21 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
       
       try {
         // Check debug mode flag
-        if (process.env.ENABLE_PLAN_DEBUG === "1") {
-          console.log('[Plan API] Debug mode enabled - calling debug wrapper...');
-          const report = await generateIELTSPlan_debugWrapper(onboardingData);
-          console.log('[PlanGen][REPORT]', report); // server-side visibility
-          return res.status(200).json({
-            success: true,
-            message: "Debug diagnostics completed",
-            debug: report,
-          });
-        }
+        const debugFlag = process.env.ENABLE_PLAN_DEBUG;
+        console.log("[PlanGen][ROUTE] ENABLE_PLAN_DEBUG =", debugFlag);
+        
+        // TEMP: FORCE DEBUG MODE for one diagnostic run
+        console.log("[PlanGen][ROUTE] Taking DEBUG WRAPPER branch (forced)");
+        const report = await generateIELTSPlan_debugWrapper(onboardingData);
+        console.log("[PlanGen][REPORT]", report);
 
+        return res.status(200).json({
+          success: true,
+          message: "Debug diagnostics completed",
+          debug: report,
+        });
+
+        // NOTE: leave the normal path here but unreachable during this forced run
         // Normal behavior (non-debug)
         console.log('[Plan API] Calling OpenAI to generate IELTS plan...');
         const plan = await generateIELTSPlan(onboardingData);
