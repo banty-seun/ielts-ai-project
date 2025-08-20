@@ -642,16 +642,21 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
       await storage.updateOnboardingStatus(userId, true);
       
       try {
-        // Call OpenAI to generate the IELTS plan (temporarily using debug wrapper)
+        // Check debug mode flag
+        if (process.env.ENABLE_PLAN_DEBUG === "1") {
+          console.log('[Plan API] Debug mode enabled - calling debug wrapper...');
+          const report = await generateIELTSPlan_debugWrapper(onboardingData);
+          console.log('[PlanGen][REPORT]', report); // server-side visibility
+          return res.status(200).json({
+            success: true,
+            message: "Debug diagnostics completed",
+            debug: report,
+          });
+        }
+
+        // Normal behavior (non-debug)
         console.log('[Plan API] Calling OpenAI to generate IELTS plan...');
-        const debugResult = await generateIELTSPlan_debugWrapper(onboardingData);
-        
-        // For this diagnostic run, return the debug data instead of processing
-        return res.status(200).json({
-          success: true,
-          message: "Debug run completed",
-          debugData: debugResult
-        });
+        const plan = await generateIELTSPlan(onboardingData);
         
         // Save the main study plan to database
         const studyPlanId = uuidv4();

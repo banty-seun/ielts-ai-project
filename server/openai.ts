@@ -204,60 +204,80 @@ async function generateIELTSPlan_debugRun(
   const temperature = 0;
   const maxTokens = 4000;
 
-  const res = await openai.chat.completions.create({
-    model,
-    temperature,
-    max_tokens: maxTokens,
-    response_format: { type: "json_object" },
-    messages,
-  });
-
-  const finishReason = res.choices?.[0]?.finish_reason ?? "unknown";
-  const usage = res.usage ?? {};
-  const raw = res.choices?.[0]?.message?.content ?? "";
-  const rawSummary = sliceForDebug(raw, 300);
-
-  console.log(`[PlanGen][${scenario}][META]`, { finishReason, usage, elapsedMs: Date.now() - startedAt });
-  console.log(`[PlanGen][${scenario}][RAW_START]`, rawSummary.head);
-  console.log(`[PlanGen][${scenario}][RAW_END]`, rawSummary.tail);
-  console.log(`[PlanGen][${scenario}][RAW_LEN]`, rawSummary.length);
-
-  let parseOk = false;
-  let parseError: PlanGenDebug["parseError"] | undefined;
-
   try {
-    JSON.parse(raw); // schema validation still happens outside; this is parse-only logging
-    parseOk = true;
-  } catch (err: any) {
-    const msg = String(err?.message ?? "");
-    const m = /position (\d+)/i.exec(msg);
-    let around: string | undefined;
-    let pos: number | undefined;
-    if (m) {
-      pos = Number(m[1]);
-      const start = Math.max(0, pos - 200);
-      const end = Math.min(raw.length, pos + 200);
-      around = raw.slice(start, end);
-    }
-    parseError = { name: String(err?.name ?? "Error"), message: msg, pos, around };
-    console.error(`[PlanGen][${scenario}][PARSE_ERROR]`, parseError);
-  }
+    const res = await openai.chat.completions.create({
+      model,
+      temperature,
+      max_tokens: maxTokens,
+      response_format: { type: "json_object" },
+      messages,
+    });
 
-  return {
-    scenario,
-    model,
-    temperature,
-    maxTokens,
-    finishReason,
-    usage,
-    rawSummary,
-    elapsedMs: Date.now() - startedAt,
-    parseOk: parseOk,
-    parseError,
-  };
+    const finishReason = res.choices?.[0]?.finish_reason ?? "unknown";
+    const usage = res.usage ?? {};
+    const raw = res.choices?.[0]?.message?.content ?? "";
+    const rawSummary = sliceForDebug(raw, 300);
+
+    console.log(`[PlanGen][${scenario}][META]`, { finishReason, usage, elapsedMs: Date.now() - startedAt });
+    console.log(`[PlanGen][${scenario}][RAW_START]`, rawSummary.head);
+    console.log(`[PlanGen][${scenario}][RAW_END]`, rawSummary.tail);
+    console.log(`[PlanGen][${scenario}][RAW_LEN]`, rawSummary.length);
+
+    let parseOk = false;
+    let parseError: PlanGenDebug["parseError"] | undefined;
+
+    try {
+      JSON.parse(raw); // schema validation still happens outside; this is parse-only logging
+      parseOk = true;
+    } catch (err: any) {
+      const msg = String(err?.message ?? "");
+      const m = /position (\d+)/i.exec(msg);
+      let around: string | undefined;
+      let pos: number | undefined;
+      if (m) {
+        pos = Number(m[1]);
+        const start = Math.max(0, pos - 200);
+        const end = Math.min(raw.length, pos + 200);
+        around = raw.slice(start, end);
+      }
+      parseError = { name: String(err?.name ?? "Error"), message: msg, pos, around };
+      console.error(`[PlanGen][${scenario}][PARSE_ERROR]`, parseError);
+    }
+
+    return {
+      scenario,
+      model,
+      temperature,
+      maxTokens,
+      finishReason,
+      usage,
+      rawSummary,
+      elapsedMs: Date.now() - startedAt,
+      parseOk: parseOk,
+      parseError,
+    };
+  } catch (openaiError: any) {
+    // If OpenAI API call fails, capture error in debug format
+    console.error(`[PlanGen][${scenario}][API_ERROR]`, openaiError?.message || openaiError);
+    return {
+      scenario,
+      model,
+      temperature,
+      maxTokens,
+      finishReason: "error",
+      usage: {},
+      rawSummary: { head: "", tail: "", length: 0 },
+      elapsedMs: Date.now() - startedAt,
+      parseOk: false,
+      parseError: { 
+        name: "OpenAI_API_Error", 
+        message: openaiError?.message || "Unknown OpenAI API error" 
+      },
+    };
+  }
 }
 
-export async function generateIELTSPlan_debugWrapper(data: OnboardingData) {
+export async function generateIELTSPlan_debugWrapper(data: OnboardingData): Promise<{ A: PlanGenDebug; B: PlanGenDebug }> {
   // Extract user's preferences for prompt (same as original function)
   const {
     fullName,
@@ -427,12 +447,36 @@ export async function generateIELTSPlan_debugWrapper(data: OnboardingData) {
     },
   ];
 
-  // Run both scenarios
-  const A = await generateIELTSPlan_debugRun("A_full", messagesFull);
-  const B = await generateIELTSPlan_debugRun("B_reduced", messagesReduced);
+  // Run both scenarios and ensure no errors escape
+  try {
+    const A = await generateIELTSPlan_debugRun("A_full", messagesFull);
+    const B = await generateIELTSPlan_debugRun("B_reduced", messagesReduced);
 
-  console.log("[PlanGen][REPORT]", { A, B });
-  return { A, B };
+    console.log("[PlanGen][WRAPPER_REPORT]", { A, B });
+    return { A, B };
+  } catch (wrapperError: any) {
+    // Fallback if something catastrophic happens
+    console.error("[PlanGen][WRAPPER_ERROR]", wrapperError?.message || wrapperError);
+    const errorDebug: PlanGenDebug = {
+      scenario: "A_full",
+      model: "gpt-4o",
+      temperature: 0,
+      maxTokens: 4000,
+      finishReason: "wrapper_error",
+      usage: {},
+      rawSummary: { head: "", tail: "", length: 0 },
+      elapsedMs: 0,
+      parseOk: false,
+      parseError: { 
+        name: "Wrapper_Error", 
+        message: wrapperError?.message || "Unknown wrapper error" 
+      },
+    };
+    return { 
+      A: errorDebug, 
+      B: { ...errorDebug, scenario: "B_reduced" }
+    };
+  }
 }
 
 // Define interface for the formatted user data
