@@ -38,6 +38,22 @@ type AttemptSubmitPayload = {
   answers: AttemptAnswerPayload[];
 };
 
+type AttemptAnswerDetail = {
+  questionId: string;
+  isCorrect: boolean;
+  pickedOptionId: string | null;
+  pickedOptionText: string | null;
+  correctOptionId: string;
+  correctOptionText: string;
+  explanation?: string;
+};
+
+type AttemptResponse = {
+  success: boolean;
+  score: { correct: number; total: number; percent: number };
+  detailed: AttemptAnswerDetail[];
+};
+
 // Question types from API
 // Use normalized types from useTaskContent hook
 interface QuestionOption {
@@ -398,10 +414,8 @@ export default function Practice() {
 
   // Session tracking and attempt submission
   const sessionStartRef = useRef<number>(Date.now());
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [showResults, setShowResults] = useState(false);
-  const [scoreSummary, setScoreSummary] = useState<{correct: number; total: number; percent: number} | null>(null);
-  const [detailedResults, setDetailedResults] = useState<any[] | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [results, setResults] = useState<AttemptResponse | null>(null);
 
   // Firebase auth context
   const { getToken } = useFirebaseAuthContext();
@@ -572,12 +586,12 @@ export default function Practice() {
       if (!content?.questions?.length) {
         throw new Error('No questions to submit');
       }
-      if (isSubmitting) {
+      if (submitting) {
         console.log('[Practice] Already submitting, ignoring duplicate call');
         return;
       }
 
-      setIsSubmitting(true);
+      setSubmitting(true);
       setIsSubmitted(true);
 
       const now = Date.now();
@@ -607,19 +621,17 @@ export default function Practice() {
         throw new Error(`Attempt POST failed: ${res.status} ${res.statusText} — ${text.slice(0, 300)}`);
       }
 
-      const data = await res.json();
+      const data: AttemptResponse = await res.json();
       if (!data?.success) {
-        throw new Error(data?.message ?? 'Submit failed');
+        throw new Error((data as any)?.message ?? 'Submit failed');
       }
 
       console.log('[Practice] Attempt submitted successfully:', {
-        attemptId: data.attemptId,
+        attemptId: (data as any).attemptId,
         score: data.score
       });
 
-      setScoreSummary(data.score);
-      setDetailedResults(data.detailed);
-      setShowResults(true);
+      setResults(data);
 
       toast({
         title: "Practice Complete!",
@@ -628,14 +640,13 @@ export default function Practice() {
 
     } catch (err: any) {
       console.error('[Practice] Submit error:', err);
-      setShowResults(false);
       toast({
         title: "Submission Error", 
         description: err?.message || String(err) || "Failed to save your answers. Please try again.",
         variant: "destructive",
       });
-      setIsSubmitting(false);
-      setIsSubmitted(false);
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -738,34 +749,34 @@ export default function Practice() {
           ) : (
             <button
               onClick={handleSubmit}
-              disabled={!areAllQuestionsAnswered() || isSubmitting}
+              disabled={!areAllQuestionsAnswered() || submitting || results !== null}
               className="px-4 py-2 rounded bg-green-600 text-white disabled:opacity-50"
             >
-              {isSubmitting ? "Submitting..." : "Submit"}
+              {submitting ? "Submitting..." : "Submit"}
             </button>
           )}
         </div>
       </div>
       
-      {/* Results Display */}
-      {showResults && scoreSummary && (
+      {/* Results Display - render from server response only */}
+      {results && (
         <div className="mt-6 p-4 bg-green-50 border border-green-200 rounded-lg">
           <h3 className="font-semibold text-green-800 mb-2">Practice Complete!</h3>
           <p className="text-green-700 mb-4">
-            You scored {scoreSummary.correct} out of {scoreSummary.total} questions correctly 
-            ({scoreSummary.percent}%)
+            You scored {results.score.correct} out of {results.score.total} questions correctly 
+            ({results.score.percent}%)
           </p>
           
-          {/* Show detailed explanations */}
-          {detailedResults && detailedResults.length > 0 && (
+          {/* Show detailed explanations from server response */}
+          {results.detailed && results.detailed.length > 0 && (
             <div className="space-y-4">
               <h4 className="font-medium text-gray-900">Question Review:</h4>
-              {detailedResults.map((result, index) => {
-                const question = questions.find(q => q.id === result.questionId);
-                const isCorrect = result.isCorrect;
+              {results.detailed.map((detail, index) => {
+                const question = questions.find(q => String(q.id) === String(detail.questionId));
+                const isCorrect = detail.isCorrect;
                 
                 return (
-                  <div key={result.questionId} className={cn(
+                  <div key={detail.questionId} className={cn(
                     "p-3 rounded border",
                     isCorrect ? "bg-green-50 border-green-200" : "bg-red-50 border-red-200"
                   )}>
@@ -786,20 +797,20 @@ export default function Practice() {
                             "font-medium",
                             isCorrect ? "text-green-700" : "text-red-700"
                           )}>
-                            {result.pickedAnswer || "No answer"}
+                            {detail.pickedOptionText || <em>Unanswered</em>}
                           </span></div>
                           
                           {!isCorrect && (
                             <div>Correct answer: <span className="font-medium text-green-700">
-                              {result.correctAnswer}
+                              {detail.correctOptionText || '—'}
                             </span></div>
                           )}
                         </div>
                         
-                        {result.explanation && (
+                        {detail.explanation && (
                           <div className="mt-3 p-2 bg-blue-50 border-l-2 border-blue-300 text-sm">
                             <div className="font-medium text-blue-900">Explanation:</div>
-                            <div className="text-blue-800 mt-1">{result.explanation}</div>
+                            <div className="text-blue-800 mt-1">{detail.explanation}</div>
                           </div>
                         )}
                       </div>
@@ -813,9 +824,15 @@ export default function Practice() {
           <div className="mt-4 pt-4 border-t border-green-200">
             <button
               onClick={() => window.location.href = "/"}
-              className="px-4 py-2 bg-gray-900 text-white rounded hover:bg-gray-800"
+              className="px-4 py-2 bg-gray-900 text-white rounded hover:bg-gray-800 mr-3"
             >
               Back to Dashboard
+            </button>
+            <button
+              onClick={() => window.location.reload()}
+              className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700"
+            >
+              Try Again
             </button>
           </div>
         </div>

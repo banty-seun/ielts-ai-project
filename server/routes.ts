@@ -1228,21 +1228,37 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
 
       const byId = new Map(normalizedQs.map(q => [q.id, q]));
 
-      // Calculate detailed results per question
-      const detailed = answers.map((a: any) => {
+      // Add type for attempt answer details
+      type AttemptAnswerDetail = {
+        questionId: string;
+        isCorrect: boolean;
+        pickedOptionId: string | null;
+        pickedOptionText: string | null;
+        correctOptionId: string;
+        correctOptionText: string;
+        explanation?: string;
+      };
+
+      // Calculate detailed results per question with resolved option text
+      const detailed: AttemptAnswerDetail[] = answers.map((a: any) => {
         const q = byId.get(a.questionId);
-        const correctOptionId = q?.correctOptionId ?? null;
+        const correctOptionId = q?.correctOptionId ?? '';
         const pickedOptionId = a?.pickedOptionId ?? null;
+        
+        // Find the actual option objects to get their text
+        const pickedOption = pickedOptionId ? q?.options?.find((opt: any) => opt.id === pickedOptionId) : null;
+        const correctOption = correctOptionId ? q?.options?.find((opt: any) => opt.id === correctOptionId) : null;
+        
         const isCorrect = !!(pickedOptionId && correctOptionId && pickedOptionId === correctOptionId);
         
         return {
-          questionId: a.questionId,
-          pickedOptionId,
-          correctOptionId,
+          questionId: String(a.questionId),
           isCorrect,
-          timeMs: typeof a?.timeMs === 'number' ? a.timeMs : undefined,
-          replayCountAtAnswer: typeof a?.replayCountAtAnswer === 'number' ? a.replayCountAtAnswer : undefined,
-          explanationShown: true, // UI will show explanations after submit
+          pickedOptionId,
+          pickedOptionText: pickedOption?.text ?? null,
+          correctOptionId,
+          correctOptionText: correctOption?.text ?? '',
+          explanation: q?.explanation ?? undefined,
         };
       });
 
@@ -1257,7 +1273,12 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
         startedAt,
         submittedAt,
         durationMs,
-        answers: detailed,
+        answers: detailed.map(d => ({
+          questionId: d.questionId,
+          pickedOptionId: d.pickedOptionId,
+          correctOptionId: d.correctOptionId,
+          isCorrect: d.isCorrect,
+        })), // Keep simpler structure for database storage
         score: { correct, total, percent },
       };
 
