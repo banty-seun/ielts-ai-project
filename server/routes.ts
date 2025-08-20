@@ -45,7 +45,7 @@ async function preGenerateScriptsForListeningTasks(
           accent: scriptResult.accent,
           scriptType: scriptResult.scriptType,
           difficulty: scriptResult.difficulty,
-          duration: scriptResult.estimatedDuration
+          duration: scriptResult.estimatedDurationSec
         };
       } else {
         console.error(`[Script Pre-Generation] Failed to generate script for "${task.title}":`, scriptResult.error);
@@ -1179,7 +1179,7 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
 
       // Remove scriptText from API response (keep it in DB but don't expose to client)
       if (taskWithContent.scriptText !== undefined) {
-        taskWithContent.scriptText = undefined;
+        taskWithContent.scriptText = null;
       }
       
       // Log final payload keys before response

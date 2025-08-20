@@ -301,9 +301,8 @@ export async function generateIELTSPlan_debugWrapper(data: OnboardingData): Prom
   const immigrationGoalText = immigrationGoal === "study" ? "study" : "immigration";
   const dailyCommitmentText =
     {
-      "30min": "30 minutes",
+      "30mins": "30 minutes",
       "1hour": "1 hour",
-      "2hours": "2 hours",
       "2hours+": "2+ hours",
     }[studyPreferences.dailyCommitment] || "not specified";
 
