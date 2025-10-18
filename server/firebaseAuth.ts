@@ -92,9 +92,7 @@ export const verifyFirebaseAuth = async (req: Request, res: Response, next: Next
     console.log('[Firebase Auth] Request headers:', {
       hasAuth: !!req.headers.authorization,
       authType: authHeader?.startsWith('Bearer ') ? 'Bearer' : 'Unknown or None',
-      tokenLength: token ? token.length : 0,
-      tokenStart: token ? `${token.substring(0, 10)}...` : 'None',
-      expectedProjectId: 'ielts-ai-a0f3b' // Must match both client and server config
+      tokenPresent: !!token,
     });
   }
 
@@ -106,7 +104,7 @@ export const verifyFirebaseAuth = async (req: Request, res: Response, next: Next
       timestamp: Date.now()
     };
     
-    console.log('[Firebase Auth] No token provided');
+    DEBUG && console.log('[Firebase Auth] No token provided');
     return res.status(401).json({ 
       message: 'Unauthorized',
       detail: 'No authentication token provided'
@@ -164,17 +162,17 @@ export const ensureFirebaseUser = async (req: Request, res: Response, next: Next
   }
 
   try {
-    console.log(`[Firebase Auth] Processing user with Firebase UID: ${req.firebaseUser.uid}, Email: ${req.firebaseUser.email || 'None'}`);
+    DEBUG && console.log(`[Firebase Auth] Processing user with Firebase UID: ${req.firebaseUser.uid}, Email: ${req.firebaseUser.email || 'None'}`);
     
     // STEP 1: Try to find user by Firebase UID first (most reliable match)
     let user = await storage.getUserByFirebaseUid(req.firebaseUser.uid);
     
     if (user) {
-      console.log(`[Firebase Auth] ✓ User found by Firebase UID: ${user.id}`);
+      DEBUG && console.log(`[Firebase Auth] ✓ User found by Firebase UID: ${user.id}`);
       
       // Update user with latest information (handles email verification status changes)
       if (req.firebaseUser.email || req.firebaseUser.picture) {
-        console.log(`[Firebase Auth] Updating existing user with latest info`);
+        DEBUG && console.log(`[Firebase Auth] Updating existing user with latest info`);
         user = await storage.upsertUser({
           ...user,
           email: req.firebaseUser.email || user.email,
@@ -184,7 +182,7 @@ export const ensureFirebaseUser = async (req: Request, res: Response, next: Next
     } 
     // STEP 2: If not found by UID, try finding by email (handles email verification case)
     else if (req.firebaseUser.email) {
-      console.log(`[Firebase Auth] User not found by UID, searching by email: ${req.firebaseUser.email}`);
+      DEBUG && console.log(`[Firebase Auth] User not found by UID, searching by email: ${req.firebaseUser.email}`);
       user = await storage.getUserByEmail(req.firebaseUser.email);
       
       // If found by email, handle potential UID conflict
@@ -199,7 +197,7 @@ export const ensureFirebaseUser = async (req: Request, res: Response, next: Next
           });
         }
         
-        console.log(`[Firebase Auth] ✓ User found by email: ${user.id}, updating Firebase UID reference`);
+        DEBUG && console.log(`[Firebase Auth] ✓ User found by email: ${user.id}, updating Firebase UID reference`);
         // Safe to update if no conflict
         user = await storage.upsertUser({
           ...user,
@@ -210,7 +208,7 @@ export const ensureFirebaseUser = async (req: Request, res: Response, next: Next
       // STEP 3: If still not found and we have an email, try username lookup as fallback
       else {
         const generatedUsername = req.firebaseUser.email.split('@')[0];
-        console.log(`[Firebase Auth] User not found by email, searching by username: ${generatedUsername}`);
+        DEBUG && console.log(`[Firebase Auth] User not found by email, searching by username: ${generatedUsername}`);
         
         try {
           user = await storage.getUserByUsername(generatedUsername);
@@ -226,7 +224,7 @@ export const ensureFirebaseUser = async (req: Request, res: Response, next: Next
               });
             }
             
-            console.log(`[Firebase Auth] ✓ User found by username: ${user.id}, updating Firebase UID reference`);
+            DEBUG && console.log(`[Firebase Auth] ✓ User found by username: ${user.id}, updating Firebase UID reference`);
             user = await storage.upsertUser({
               ...user,
               firebaseUid: req.firebaseUser.uid, // Update to new Firebase UID
@@ -235,14 +233,14 @@ export const ensureFirebaseUser = async (req: Request, res: Response, next: Next
             });
           }
         } catch (error: any) {
-          console.log(`[Firebase Auth] Error looking up by username: ${error?.message || 'Unknown error'}`);
+          DEBUG && console.log(`[Firebase Auth] Error looking up by username: ${error?.message || 'Unknown error'}`);
         }
       }
     }
 
     // STEP 4: Create a new user if no existing match was found
     if (!user) {
-      console.log(`[Firebase Auth] ➕ No existing user found, creating new user for Firebase UID: ${req.firebaseUser.uid}`);
+      DEBUG && console.log(`[Firebase Auth] ➕ No existing user found, creating new user for Firebase UID: ${req.firebaseUser.uid}`);
       
       // Generate a username from email with timestamp to avoid conflicts
       const timestamp = Date.now().toString().substr(-4);
@@ -254,7 +252,7 @@ export const ensureFirebaseUser = async (req: Request, res: Response, next: Next
       // This is critical to ensure our database ID remains stable even if Firebase UID changes
       const stableDbId = crypto.randomUUID();
       
-      console.log(`[Firebase Auth] Creating new user with stable ID: ${stableDbId}`);
+      DEBUG && console.log(`[Firebase Auth] Creating new user with stable ID: ${stableDbId}`);
       
       user = await storage.upsertUser({
         id: stableDbId, // Use stable UUID as database ID
@@ -264,14 +262,14 @@ export const ensureFirebaseUser = async (req: Request, res: Response, next: Next
         profileImageUrl: req.firebaseUser.picture
       });
       
-      console.log(`[Firebase Auth] ✓ Created new user with username: ${username}`);
+      DEBUG && console.log(`[Firebase Auth] ✓ Created new user with username: ${username}`);
     }
 
     // Add the database user to the request
     req.user = user;
     
     // Log relationship between database and Firebase IDs for debugging
-    console.log(`[Firebase Auth] Request authenticated: Database ID: ${user.id}, Firebase UID: ${req.firebaseUser.uid}`);
+    DEBUG && console.log(`[Firebase Auth] Request authenticated: Database ID: ${user.id}, Firebase UID: ${req.firebaseUser.uid}`);
     
     next();
   } catch (error) {

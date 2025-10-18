@@ -10,14 +10,23 @@ export async function createFollowUpListeningTask(opts: {
   
   // Read current task content to inherit properties
   const currentTask = await storage.getTaskProgress(from.progressId);
-  if (!currentTask || currentTask.userId !== userId) {
-    throw new Error('Invalid task or access denied');
+  if (!currentTask) {
+    throw new Error('Follow-up source task not found');
+  }
+
+  if (currentTask.userId !== userId) {
+    throw new Error('Follow-up task access denied');
+  }
+  
+  const weeklyPlanId = currentTask.weeklyPlanId;
+  if (!weeklyPlanId) {
+    throw new Error('Follow-up task missing weekly plan reference');
   }
   
   // Get the weekly plan info to maintain week context
-  const weeklyPlan = await storage.getWeeklyStudyPlan(currentTask.weeklyPlanId);
+  const weeklyPlan = await storage.getWeeklyStudyPlan(weeklyPlanId);
   if (!weeklyPlan) {
-    throw new Error('Weekly plan not found');
+    throw new Error(`Weekly plan ${weeklyPlanId} not found`);
   }
   
   // Build title with inherited context

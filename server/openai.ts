@@ -10,6 +10,13 @@ const sliceForDebug = (s: string, n = 300): DebugSlice => ({
   length: s.length,
 });
 
+const isProduction = process.env.NODE_ENV === "production";
+const verboseLog = (...args: any[]) => {
+  if (!isProduction) {
+    console.log(...args);
+  }
+};
+
 interface PlanGenDebug {
   scenario: "A_full" | "B_reduced";
   model: string;
@@ -218,10 +225,10 @@ async function generateIELTSPlan_debugRun(
     const raw = res.choices?.[0]?.message?.content ?? "";
     const rawSummary = sliceForDebug(raw, 300);
 
-    console.log(`[PlanGen][${scenario}][META]`, { finishReason, usage, elapsedMs: Date.now() - startedAt });
-    console.log(`[PlanGen][${scenario}][RAW_START]`, rawSummary.head);
-    console.log(`[PlanGen][${scenario}][RAW_END]`, rawSummary.tail);
-    console.log(`[PlanGen][${scenario}][RAW_LEN]`, rawSummary.length);
+    verboseLog(`[PlanGen][${scenario}][META]`, { finishReason, usage, elapsedMs: Date.now() - startedAt });
+    verboseLog(`[PlanGen][${scenario}][RAW_START]`, rawSummary.head);
+    verboseLog(`[PlanGen][${scenario}][RAW_END]`, rawSummary.tail);
+    verboseLog(`[PlanGen][${scenario}][RAW_LEN]`, rawSummary.length);
 
     let parseOk = false;
     let parseError: PlanGenDebug["parseError"] | undefined;
@@ -451,7 +458,7 @@ export async function generateIELTSPlan_debugWrapper(data: OnboardingData): Prom
     const A = await generateIELTSPlan_debugRun("A_full", messagesFull);
     const B = await generateIELTSPlan_debugRun("B_reduced", messagesReduced);
 
-    console.log("[PlanGen][WRAPPER_REPORT]", { A, B });
+    verboseLog("[PlanGen][WRAPPER_REPORT]", { A, B });
     return { A, B };
   } catch (wrapperError: any) {
     // Fallback if something catastrophic happens
@@ -571,7 +578,7 @@ ${scriptText}
 
 Generate 4-5 IELTS listening comprehension questions based on this script.`;
 
-    console.log(`[Question Generation] Generating questions for "${taskTitle}":`, {
+    verboseLog(`[Question Generation] Generating questions for "${taskTitle}":`, {
       scriptLength: scriptText.length,
       difficulty,
       wordCount: scriptText.split(/\s+/).length
@@ -641,7 +648,7 @@ Generate 4-5 IELTS listening comprehension questions based on this script.`;
         };
       }
 
-      console.log(`[Question Generation] Generated ${validatedQuestions.length} questions for "${taskTitle}"`);
+      verboseLog(`[Question Generation] Generated ${validatedQuestions.length} questions for "${taskTitle}"`);
 
       return {
         success: true,
@@ -783,15 +790,15 @@ This plan will be shown in a dashboard UI, so make sure the task names and descr
 Do not include Reading, Writing, or Speaking practice — this prompt is only for the Listening module.`;
 
     // Log the prompt for debugging
-    console.log("OpenAI Prompt Details:");
-    console.log("- System Prompt Length:", systemPrompt.length);
-    console.log("- User Data Length:", formattedDataString.length);
-    console.log("- API Key Check:", process.env.OPENAI_API_KEY ? "Present" : "Missing");
-    console.log("- Formatted User Data:", JSON.stringify(formattedUserData, null, 2));
+    verboseLog("OpenAI Prompt Details:");
+    verboseLog("- System Prompt Length:", systemPrompt.length);
+    verboseLog("- User Data Length:", formattedDataString.length);
+    verboseLog("- API Key Check:", process.env.OPENAI_API_KEY ? "Present" : "Missing");
+    verboseLog("- Formatted User Data:", JSON.stringify(formattedUserData, null, 2));
 
     // Call OpenAI API with better error handling
     try {
-      console.log("Calling OpenAI API to generate Listening study plan...");
+      verboseLog("Calling OpenAI API to generate Listening study plan...");
       
       const response = await openai.chat.completions.create({
         model: "gpt-4o", // the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
@@ -812,10 +819,10 @@ Do not include Reading, Writing, or Speaking practice — this prompt is only fo
 
       // Parse the JSON response
       const planText = response.choices[0].message.content;
-      console.log("Received response from OpenAI");
+      verboseLog("Received response from OpenAI");
       
       // Log token usage for monitoring
-      console.log("OpenAI Token Usage:", {
+      verboseLog("OpenAI Token Usage:", {
         promptTokens: response.usage?.prompt_tokens || 0,
         completionTokens: response.usage?.completion_tokens || 0,
         totalTokens: response.usage?.total_tokens || 0
@@ -834,7 +841,7 @@ Do not include Reading, Writing, or Speaking practice — this prompt is only fo
       try {
         // Parse the response into an object
         const planData = JSON.parse(planText);
-        console.log(
+        verboseLog(
           "Raw OpenAI response structure:",
           JSON.stringify(planData, null, 2),
         );
@@ -1016,7 +1023,7 @@ Do not include Reading, Writing, or Speaking practice — this prompt is only fo
           plan: planArray,
         };
 
-        console.log(
+        verboseLog(
           "Successfully processed listening study plan with",
           planArray.length,
           "activities",
@@ -1125,7 +1132,7 @@ Requirements:
 - Target duration 1–3 minutes when spoken aloud
 - You MUST choose a valid IELTS part and a topic domain per the system instructions and return the JSON only.`;
 
-    console.log(`[Script Generation] Generating IELTS script for "${task.taskTitle}":`, {
+    verboseLog(`[Script Generation] Generating IELTS script for "${task.taskTitle}":`, {
       userLevel,
       targetBand,
       weekNumber: task.weekNumber
@@ -1169,7 +1176,7 @@ Requirements:
         };
       }
 
-      console.log(`[Script Generation] Generated IELTS script:`, {
+      verboseLog(`[Script Generation] Generated IELTS script:`, {
         ieltsPart: parsedResponse.ieltsPart,
         topicDomain: parsedResponse.topicDomain,
         contextLabel: parsedResponse.contextLabel,

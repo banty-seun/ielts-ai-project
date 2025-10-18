@@ -3,6 +3,13 @@
  */
 
 import { tokenManager } from '@/lib/queryClient';
+
+const IS_DEV = import.meta.env.DEV;
+const debugLog = (...args: any[]) => {
+  if (IS_DEV) {
+    console.log(...args);
+  }
+};
 // The useFirebaseAuthContext hook is only imported in the useAuthenticatedApi hook
 // to avoid React hooks call rules violations
 
@@ -19,11 +26,9 @@ export async function apiRequestWithToken(
   if (token) {
     const authHeader = `Bearer ${token}`;
     headers.set('Authorization', authHeader);
-    console.log(`[API Client] Request to ${path} with token`);
-    console.log('[apiClient] getToken() return value:', token.substring(0, 10) + '...');
-    console.log('[apiClient] Authorization header:', authHeader.slice(0, 15) + '...');
+    debugLog(`[API Client] Request to ${path} with token (masked)`);
   } else {
-    console.log(`[API Client] Request to ${path} without token - no token available`);
+    debugLog(`[API Client] Request to ${path} without token - no token available`);
   }
   
   // Make the request with the updated headers
@@ -34,7 +39,7 @@ export async function apiRequestWithToken(
   });
   
   // Log response for debugging
-  console.log(`[API Client] Response from ${path}`, { 
+  debugLog(`[API Client] Response from ${path}`, { 
     status: response.status, 
     ok: response.ok,
     hasToken: !!token
@@ -68,18 +73,18 @@ export async function apiRequestWithFreshToken(
     backoffCooldownMs - timeSinceLastRefresh : 0;
   
   if (isInBackoff && timeSinceLastRefresh < backoffCooldownMs) {
-    console.log(`[API Client] Skipping token refresh for ${path} - in backoff mode for ${Math.round(backoffTimeRemaining/1000)}s more`);
+    debugLog(`[API Client] Skipping token refresh for ${path} - in backoff mode for ${Math.round(backoffTimeRemaining/1000)}s more`);
     return apiRequestWithToken(path, options);
   }
   
   if (!shouldTryRefresh) {
-    console.log(`[API Client] Using cached token for ${path} - last refresh ${Math.round(timeSinceLastRefresh/1000)}s ago`);
+    debugLog(`[API Client] Using cached token for ${path} - last refresh ${Math.round(timeSinceLastRefresh/1000)}s ago`);
     return apiRequestWithToken(path, options);
   }
   
   try {
     // Get a fresh token directly from Firebase Auth
-    console.log(`[API Client] Requesting fresh token for ${path}`);
+    debugLog(`[API Client] Requesting fresh token for ${path}`);
     const token = await getToken();
     
     // Token refresh successful, reset retry counter
@@ -87,26 +92,24 @@ export async function apiRequestWithFreshToken(
     tokenRefreshTracker.refreshAttempts = 0;
     
     if (token) {
-      console.log(`[API Client] Received fresh token for ${path}`, {
+      debugLog(`[API Client] Received fresh token for ${path}`, {
         length: token.length,
-        tokenStart: `${token.substring(0, 10)}...`,
-        tokenEnd: `...${token.substring(token.length - 10)}`
       });
       
       // Update token in the token manager for future requests
-      console.log('[Auth] Token updated in token manager');
+      debugLog('[Auth] Token updated in token manager');
       tokenManager.setToken(token);
     } else {
-      console.log(`[API Client] No token received for ${path}`);
+      debugLog(`[API Client] No token received for ${path}`);
     }
     
     // Add the token to the request headers if available
     const headers = new Headers(options.headers);
     if (token) {
       headers.set('Authorization', `Bearer ${token}`);
-      console.log(`[API Client] Request to ${path} with fresh token`);
+      debugLog(`[API Client] Request to ${path} with fresh token (masked)`);
     } else {
-      console.log(`[API Client] Request to ${path} without token - no fresh token available`);
+      debugLog(`[API Client] Request to ${path} without token - no fresh token available`);
     }
     
     // Make the request with the updated headers
@@ -117,7 +120,7 @@ export async function apiRequestWithFreshToken(
     });
     
     // Log response for debugging
-    console.log(`[API Client] Response from ${path}`, { 
+    debugLog(`[API Client] Response from ${path}`, { 
       status: response.status, 
       ok: response.ok,
       hasToken: !!token
@@ -160,11 +163,11 @@ async function safeParseJson<T>(response: Response): Promise<T> {
   try {
     // Check if the content type is JSON - guard headers access
     const contentType = response.headers?.get ? response.headers.get('content-type') : null;
-    console.log(`[API Client] safeParseJson called for ${response.url}, content-type: ${contentType}`);
+  debugLog(`[API Client] safeParseJson called for ${response.url}, content-type: ${contentType}`);
     
     if (contentType && contentType.includes('application/json')) {
       const jsonData = await response.json();
-      console.log(`[API Client] Parsed JSON data:`, jsonData);
+      debugLog(`[API Client] Parsed JSON data:`, jsonData);
       return jsonData;
     } else {
       // For non-JSON responses, read the text and log it
@@ -343,7 +346,7 @@ export async function postJsonWithAuth(
   if (token) headers.set('Authorization', `Bearer ${token}`);
 
   // DEBUG: minimal diagnostics
-  console.log('[POST][attempt] url', url.toString(), 'hasToken', !!token);
+  debugLog('[POST][attempt] url', url.toString(), 'hasToken', !!token);
 
   return fetch(url.toString(), {
     method: 'POST',
@@ -374,7 +377,7 @@ export async function getFreshWithAuth(path: string, getToken: () => Promise<str
   
   // Null-safe headers access; never assume headers exists
   const contentType = res?.headers?.get ? res.headers.get('content-type') : null;
-  console.log('[API][getFreshWithAuth][return]', {
+  debugLog('[API][getFreshWithAuth][return]', {
     url: path,
     ok: res?.ok,
     status: res?.status,
@@ -394,14 +397,14 @@ export async function postFreshWithAuth<T>(
     // Get token and log it before the API call
     const token = await getToken();
     if (token) {
-      console.log('[apiClient] postFreshWithAuth using token:', token.substring(0, 10) + '...');
+      debugLog('[apiClient] postFreshWithAuth using token (masked)');
     } else {
-      console.log('[apiClient] postFreshWithAuth has no token');
+      debugLog('[apiClient] postFreshWithAuth has no token');
     }
     
     // Prepare auth header and log it
     const authHeader = token ? `Bearer ${token}` : '';
-    console.log('[apiClient] Authorization header:', authHeader.slice(0, 15) + '...');
+    debugLog('[apiClient] Authorization header attached (masked)');
     
     // Make the request
     const response = await fetch(path, {
@@ -420,11 +423,11 @@ export async function postFreshWithAuth<T>(
       
       // Force refresh the token
       const newToken = await getToken(true);
-      console.log('[apiClient] Got fresh token:', newToken ? newToken.substring(0, 10) + '...' : 'null');
+      debugLog('[apiClient] Got fresh token (masked)');
       
       // Prepare auth header with new token
       const newAuthHeader = newToken ? `Bearer ${newToken}` : '';
-      console.log('[apiClient] New Authorization header:', newAuthHeader.slice(0, 15) + '...');
+      debugLog('[apiClient] New Authorization header attached (masked)');
       
       // Retry the request with the new token
       const retryResponse = await fetch(path, {
