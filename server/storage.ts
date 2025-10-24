@@ -15,12 +15,13 @@ import {
   type TaskContentUpdate,
   type Question,
   type TaskAttempt,
-  type InsertTaskAttempt
+  type InsertTaskAttempt,
 } from "@shared/schema";
-import { db } from "./db";
+import { db, schema } from "./db";
 import { eq, and } from "drizzle-orm";
+import { type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { sql } from "drizzle-orm/sql";
-import { v4 as uuid } from 'uuid';
+import { v4 as uuid } from "uuid";
 
 // Interface for storage operations
 export interface IStorage {
@@ -69,20 +70,25 @@ export interface IStorage {
   // Task attempt operations for AI Coach analytics
   insertTaskAttempt(attempt: TaskAttempt): Promise<void>;
   getTaskProgressById(id: string, userId: string): Promise<TaskProgress | undefined>;
+
+  runInTransaction<T>(fn: (storage: IStorage) => Promise<T>): Promise<T>;
 }
 
+type DrizzleDb = NodePgDatabase<typeof schema>;
+
 export class DatabaseStorage implements IStorage {
+  constructor(private readonly orm: DrizzleDb) {}
   // User operations for Replit Auth
   async getUser(id: string): Promise<User | undefined> {
     // First try to find user by primary ID
-    const [user] = await db.select().from(users).where(eq(users.id, id));
+    const [user] = await this.orm.select().from(users).where(eq(users.id, id));
     
     if (user) {
       return user;
     }
     
     // If not found, try Firebase UID
-    const [userByFirebase] = await db.select().from(users).where(eq(users.firebaseUid, id));
+    const [userByFirebase] = await this.orm.select().from(users).where(eq(users.firebaseUid, id));
     
     if (userByFirebase) {
       console.log(`[Storage] User found by Firebase UID instead of primary ID: ${id}`);
@@ -94,27 +100,27 @@ export class DatabaseStorage implements IStorage {
   }
   
   async getUserByEmail(email: string): Promise<User | undefined> {
-    const [user] = await db.select().from(users).where(eq(users.email, email));
+    const [user] = await this.orm.select().from(users).where(eq(users.email, email));
     return user;
   }
   
   async getUserByUsername(username: string): Promise<User | undefined> {
-    const [user] = await db.select().from(users).where(eq(users.username, username));
+    const [user] = await this.orm.select().from(users).where(eq(users.username, username));
     return user;
   }
   
   async getUserByGoogleId(googleId: string): Promise<User | undefined> {
-    const [user] = await db.select().from(users).where(eq(users.googleId, googleId));
+    const [user] = await this.orm.select().from(users).where(eq(users.googleId, googleId));
     return user;
   }
   
   async getUserByFirebaseUid(firebaseUid: string): Promise<User | undefined> {
-    const [user] = await db.select().from(users).where(eq(users.firebaseUid, firebaseUid));
+    const [user] = await this.orm.select().from(users).where(eq(users.firebaseUid, firebaseUid));
     return user;
   }
 
   async upsertUser(userData: UpsertUser): Promise<User> {
-    const [user] = await db
+    const [user] = await this.orm
       .insert(users)
       .values(userData)
       .onConflictDoUpdate({
@@ -145,7 +151,7 @@ export class DatabaseStorage implements IStorage {
     // Now we have the user, update using the database ID
     console.log(`[Storage] Updating onboarding status for user ${userToUpdate.id} to ${completed}`);
     
-    const [updatedUser] = await db
+    const [updatedUser] = await this.orm
       .update(users)
       .set({ 
         onboardingCompleted: completed,
@@ -174,7 +180,7 @@ export class DatabaseStorage implements IStorage {
     // Start a transaction to ensure all or nothing is deleted
     try {
       // Use a transaction to ensure all operations succeed or all fail
-      await db.transaction(async (tx) => {
+      await this.orm.transaction(async (tx) => {
         console.log(`[Storage] Deleting task progress records for user ${userId}`);
         await tx.delete(taskProgress).where(eq(taskProgress.userId, userId));
         
@@ -201,7 +207,7 @@ export class DatabaseStorage implements IStorage {
   
   // Study plan operations
   async createStudyPlan(studyPlanData: InsertStudyPlan): Promise<StudyPlan> {
-    const [studyPlan] = await db
+    const [studyPlan] = await this.orm
       .insert(studyPlans)
       .values(studyPlanData)
       .returning();
@@ -209,7 +215,7 @@ export class DatabaseStorage implements IStorage {
   }
   
   async getStudyPlan(id: string): Promise<StudyPlan | undefined> {
-    const [studyPlan] = await db
+    const [studyPlan] = await this.orm
       .select()
       .from(studyPlans)
       .where(eq(studyPlans.id, id));
@@ -222,7 +228,7 @@ export class DatabaseStorage implements IStorage {
     
     if (user) {
       // Use the database ID for the query
-      return db
+      return this.orm
         .select()
         .from(studyPlans)
         .where(eq(studyPlans.userId, user.id));
@@ -235,7 +241,7 @@ export class DatabaseStorage implements IStorage {
   
   // Weekly study plan operations
   async createWeeklyStudyPlan(weeklyPlanData: InsertWeeklyStudyPlan): Promise<WeeklyStudyPlan> {
-    const [weeklyPlan] = await db
+    const [weeklyPlan] = await this.orm
       .insert(weeklyStudyPlans)
       .values(weeklyPlanData)
       .returning();
@@ -243,7 +249,7 @@ export class DatabaseStorage implements IStorage {
   }
   
   async getWeeklyStudyPlan(id: string): Promise<WeeklyStudyPlan | undefined> {
-    const [weeklyPlan] = await db
+    const [weeklyPlan] = await this.orm
       .select()
       .from(weeklyStudyPlans)
       .where(eq(weeklyStudyPlans.id, id));
@@ -256,7 +262,7 @@ export class DatabaseStorage implements IStorage {
     
     if (user) {
       // Use the database ID for the query
-      return db
+      return this.orm
         .select()
         .from(weeklyStudyPlans)
         .where(eq(weeklyStudyPlans.userId, user.id));
@@ -277,7 +283,7 @@ export class DatabaseStorage implements IStorage {
     }
     
     // Use the database ID for the query
-    const [weeklyPlan] = await db
+    const [weeklyPlan] = await this.orm
       .select()
       .from(weeklyStudyPlans)
       .where(
@@ -309,7 +315,7 @@ export class DatabaseStorage implements IStorage {
     }
     
     // Use the database ID for the query to get all plans for this week
-    const weeklyPlans = await db
+    const weeklyPlans = await this.orm
       .select()
       .from(weeklyStudyPlans)
       .where(
@@ -340,7 +346,7 @@ export class DatabaseStorage implements IStorage {
     if (existingPlan) {
       // Update the existing plan
       console.log(`[Storage] Updating existing weekly plan for user ${databaseUserId}, week ${weekNumber}, skill ${skillFocus}`);
-      const [updatedPlan] = await db
+      const [updatedPlan] = await this.orm
         .update(weeklyStudyPlans)
         .set({
           weekFocus: weekFocus,
@@ -376,7 +382,7 @@ export class DatabaseStorage implements IStorage {
       taskProgressData.id = uuid();
     }
     
-    const [createdTaskProgress] = await db
+    const [createdTaskProgress] = await this.orm
       .insert(taskProgress)
       .values(taskProgressData)
       .returning();
@@ -385,7 +391,7 @@ export class DatabaseStorage implements IStorage {
   }
   
   async getTaskProgress(id: string): Promise<TaskProgress | undefined> {
-    const [progress] = await db
+    const [progress] = await this.orm
       .select()
       .from(taskProgress)
       .where(eq(taskProgress.id, id));
@@ -394,7 +400,7 @@ export class DatabaseStorage implements IStorage {
   }
   
   async getTaskProgressByUserAndTask(userId: string, weekNumber: number, dayNumber: number): Promise<TaskProgress | undefined> {
-    const [progress] = await db
+    const [progress] = await this.orm
       .select()
       .from(taskProgress)
       .where(
@@ -409,7 +415,7 @@ export class DatabaseStorage implements IStorage {
   }
   
   async getTaskProgressByWeeklyPlan(weeklyPlanId: string): Promise<TaskProgress[]> {
-    return db
+    return this.orm
       .select()
       .from(taskProgress)
       .where(eq(taskProgress.weeklyPlanId, weeklyPlanId))
@@ -441,7 +447,7 @@ export class DatabaseStorage implements IStorage {
       updateData.completedAt = new Date();
     }
     
-    const [updatedTask] = await db
+    const [updatedTask] = await this.orm
       .update(taskProgress)
       .set(updateData)
       .where(eq(taskProgress.id, id))
@@ -515,7 +521,7 @@ export class DatabaseStorage implements IStorage {
       console.log(`[Storage] Inserting ${newTaskRecords.length} new task progress records (${existingTasks.length} already exist)`);
       
       // Insert all the new task progress records
-      const createdTasks = await db
+      const createdTasks = await this.orm
         .insert(taskProgress)
         .values(newTaskRecords)
         .returning();
@@ -538,7 +544,7 @@ export class DatabaseStorage implements IStorage {
    * @returns Task with content or undefined if not found
    */
   async getTaskWithContent(id: string): Promise<TaskProgress | undefined> {
-    const [task] = await db
+    const [task] = await this.orm
       .select()
       .from(taskProgress)
       .where(eq(taskProgress.id, id));
@@ -614,7 +620,7 @@ export class DatabaseStorage implements IStorage {
     }
     
     // Perform the update
-    const [updatedTask] = await db
+    const [updatedTask] = await this.orm
       .update(taskProgress)
       .set(updateData)
       .where(eq(taskProgress.id, id))
@@ -634,7 +640,7 @@ export class DatabaseStorage implements IStorage {
       answerCount: attempt.answers.length
     });
     
-    await db.insert(taskAttempts).values({
+    await this.orm.insert(taskAttempts).values({
       id: attempt.id,
       taskProgressId: attempt.taskProgressId,
       userId: attempt.userId,
@@ -653,13 +659,20 @@ export class DatabaseStorage implements IStorage {
    * @returns Task progress or undefined if not found/not owned
    */
   async getTaskProgressById(id: string, userId: string): Promise<TaskProgress | undefined> {
-    const [task] = await db
+    const [task] = await this.orm
       .select()
       .from(taskProgress)
       .where(and(eq(taskProgress.id, id), eq(taskProgress.userId, userId)));
     
     return task || undefined;
   }
+
+  async runInTransaction<T>(fn: (storage: IStorage) => Promise<T>): Promise<T> {
+    return await db.transaction(async (tx) => {
+      const transactionalStorage = new DatabaseStorage(tx);
+      return await fn(transactionalStorage);
+    });
+  }
 }
 
-export const storage = new DatabaseStorage();
+export const storage = new DatabaseStorage(db);

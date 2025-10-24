@@ -1,15 +1,20 @@
-import { Pool, neonConfig } from '@neondatabase/serverless';
-import { drizzle } from 'drizzle-orm/neon-serverless';
-import ws from "ws";
-import * as schema from "@shared/schema";
+// server/db.ts
+import 'dotenv/config';
+import { Pool } from 'pg';
+import { drizzle, NodePgDatabase } from 'drizzle-orm/node-postgres';
+import * as schema from '../shared/schema'; // adjust path if yours differs
 
-neonConfig.webSocketConstructor = ws;
+// Reuse a single pool in dev (avoid hot-reload duplication)
+const globalForDb = global as unknown as { __pool?: Pool; __db?: NodePgDatabase<typeof schema> };
 
-if (!process.env.DATABASE_URL) {
-  throw new Error(
-    "DATABASE_URL must be set. Did you forget to provision a database?",
-  );
+if (!globalForDb.__pool) {
+  globalForDb.__pool = new Pool({ connectionString: process.env.DATABASE_URL });
 }
 
-export const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-export const db = drizzle({ client: pool, schema });
+if (!globalForDb.__db) {
+  globalForDb.__db = drizzle(globalForDb.__pool, { schema });
+}
+
+export const pool = globalForDb.__pool; // if you need raw SQL occasionally
+export const db: NodePgDatabase<typeof schema> = globalForDb.__db;
+export { schema };

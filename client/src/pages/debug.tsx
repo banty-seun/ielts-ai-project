@@ -8,6 +8,13 @@ import { toast } from '@/hooks/use-toast';
 import { useFirebaseAuthContext } from '@/contexts/FirebaseAuthContext';
 import { getFreshWithAuth } from '@/lib/apiClient';
 
+type WeeklyPlanCheck = { found: boolean; id?: string; error?: string };
+type AuthDebugResponse = Record<string, unknown>;
+type TestLoginResponse = { uid: string; weeklyPlanCheck?: WeeklyPlanCheck } & AuthDebugResponse;
+type AuthUserResponse = { id: string } & Record<string, unknown>;
+type WeeklyPlanResponse = { plan: { id: string } } & Record<string, unknown>;
+type TokenTestResponse = Record<string, unknown>;
+
 export default function DebugPage() {
   const { user, isLoading } = useAuth();
   const { getToken } = useFirebaseAuthContext();
@@ -32,7 +39,7 @@ export default function DebugPage() {
 
   const fetchSessionDebug = async () => {
     try {
-      const data = await getFreshWithAuth<any>('/api/firebase/auth/debug', getToken);
+      const data = await getFreshWithAuth<AuthDebugResponse>('/api/firebase/auth/debug', getToken);
       setSessionStatus(data);
       addToDebug('Session debug fetched successfully');
     } catch (error) {
@@ -43,7 +50,7 @@ export default function DebugPage() {
   const testLogin = async () => {
     addToDebug('Attempting Firebase test login...');
     try {
-      const data = await getFreshWithAuth<any>('/api/firebase/auth/test-login', getToken);
+      const data = await getFreshWithAuth<TestLoginResponse>('/api/firebase/auth/test-login', getToken);
       setSessionStatus({
         ...sessionStatus,
         firebaseTestLogin: data
@@ -82,8 +89,8 @@ export default function DebugPage() {
 
   const testWhoAmI = async () => {
     addToDebug('Checking current user with Firebase authentication...');
-    try {
-      const data = await getFreshWithAuth<any>('/api/firebase/auth/user', getToken);
+   try {
+      const data = await getFreshWithAuth<AuthUserResponse>('/api/firebase/auth/user', getToken);
       addToDebug('Firebase user data: ' + JSON.stringify(data, null, 2));
       toast({
         title: "Firebase Authentication Successful",
@@ -105,7 +112,7 @@ export default function DebugPage() {
     addToDebug('Fetching weekly plan with Firebase authentication...');
     
     try {
-      const data = await getFreshWithAuth<any>('/api/firebase/weekly-plan/1/Listening', getToken);
+      const data = await getFreshWithAuth<WeeklyPlanResponse>('/api/firebase/weekly-plan/1/Listening', getToken);
       setWeeklyPlanData(data);
       addToDebug('Weekly plan fetched successfully with Firebase auth');
       
@@ -134,7 +141,7 @@ export default function DebugPage() {
     addToDebug('Fetching weekly plan through Firebase direct debug endpoint...');
     
     try {
-      const data = await getFreshWithAuth<any>('/api/firebase/debug/weekly-plan/1/Listening', getToken);
+      const data = await getFreshWithAuth<WeeklyPlanResponse>('/api/firebase/debug/weekly-plan/1/Listening', getToken);
       setWeeklyPlanData(data);
       addToDebug('Direct weekly plan fetched successfully with Firebase auth');
       
@@ -160,7 +167,7 @@ export default function DebugPage() {
   const testCookie = async () => {
     addToDebug('Testing Firebase auth token...');
     try {
-      const data = await getFreshWithAuth<any>('/api/firebase/auth/test-token', getToken);
+      const data = await getFreshWithAuth<TokenTestResponse>('/api/firebase/auth/test-token', getToken);
       setSessionStatus({
         ...sessionStatus,
         tokenTest: data

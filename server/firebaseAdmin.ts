@@ -26,7 +26,15 @@ try {
 
 // Export the admin services needed
 export const auth = admin.auth();
-export const firestore = admin.firestore();
+
+let firestoreInstance: admin.firestore.Firestore | null = null;
+try {
+  firestoreInstance = admin.firestore();
+} catch (firestoreError) {
+  console.warn('[Firebase Admin] Firestore initialization skipped:', (firestoreError as Error)?.message ?? firestoreError);
+}
+
+export const firestore = firestoreInstance;
 
 // Token verification cache to reduce duplicate verifications
 // This is a simple in-memory cache with expiration

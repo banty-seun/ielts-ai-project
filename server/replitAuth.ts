@@ -1,5 +1,7 @@
 import * as client from "openid-client";
 import { Strategy, type VerifyFunction } from "openid-client/passport";
+import fs from "node:fs/promises";
+import path from "node:path";
 
 import passport from "passport";
 import session from "express-session";
@@ -8,12 +10,90 @@ import memoize from "memoizee";
 import connectPg from "connect-pg-simple";
 import { storage } from "./storage";
 
-if (!process.env.REPLIT_DOMAINS) {
+const replitEnabled = process.env.REPLIT_ENABLED === "true";
+
+if (replitEnabled && !process.env.REPLIT_DOMAINS) {
   throw new Error("Environment variable REPLIT_DOMAINS not provided");
 }
 
+const shouldBypassOidc =
+  process.env.AUTH_OFFLINE === "1" ||
+  typeof process.env.FIREBASE_AUTH_EMULATOR_HOST === "string";
+
+const isFileReference = (value?: string): value is string =>
+  typeof value === "string" && value.startsWith("file:");
+
+const resolveFileReference = (fileRef: string) =>
+  path.resolve(process.cwd(), fileRef.replace(/^file:/, ""));
+
 const getOidcConfig = memoize(
   async () => {
+    const issuerRef = process.env.AUTH_ISSUER;
+    const jwksRef = process.env.AUTH_JWKS;
+
+    if (isFileReference(issuerRef) && isFileReference(jwksRef)) {
+      const issuerPath = resolveFileReference(issuerRef);
+      const jwksPath = resolveFileReference(jwksRef);
+
+      const issuerRaw = await fs.readFile(issuerPath, "utf8");
+      const jwksRaw = await fs.readFile(jwksPath, "utf8");
+
+      const issuerMetadata = JSON.parse(issuerRaw);
+      const jwksJson = JSON.parse(jwksRaw);
+
+      if (!issuerMetadata?.issuer) {
+        throw new Error(
+          `[Auth] Local issuer metadata missing "issuer" field (${issuerRef})`
+        );
+      }
+
+      const issuerUrl = new URL(issuerMetadata.issuer);
+      const metadata = { ...issuerMetadata };
+      const jwksUri =
+        typeof metadata.jwks_uri === "string"
+          ? metadata.jwks_uri
+          : `${issuerUrl.origin}/jwks`;
+
+      metadata.jwks_uri = jwksUri;
+
+      const localFetch: client.CustomFetch = async (url, _options) => {
+        const target = url;
+
+        if (target.includes("/.well-known/openid-configuration")) {
+          return new Response(JSON.stringify(metadata), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+
+        if (target === jwksUri) {
+          return new Response(JSON.stringify(jwksJson), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+
+        throw new Error(`[Auth] Local OIDC fetch blocked for ${target}`);
+      };
+
+      const config = await client.discovery(
+        issuerUrl,
+        process.env.REPL_ID!,
+        undefined,
+        undefined,
+        {
+          [client.customFetch]: localFetch,
+        }
+      );
+
+      console.log("[Auth] Loaded local OIDC metadata", {
+        issuer: metadata.issuer,
+        jwks: jwksRef,
+      });
+
+      return config;
+    }
+
     return await client.discovery(
       new URL(process.env.ISSUER_URL ?? "https://replit.com/oidc"),
       process.env.REPL_ID!
@@ -84,10 +164,21 @@ async function upsertUser(
 }
 
 export async function setupAuth(app: Express) {
+  if (!replitEnabled) {
+    return;
+  }
+
   app.set("trust proxy", 1);
   app.use(getSession());
   app.use(passport.initialize());
   app.use(passport.session());
+
+  if (shouldBypassOidc) {
+    console.log("[Auth] OIDC disabled (AUTH_OFFLINE/emulator); using Firebase Admin only");
+    passport.serializeUser((user: Express.User, cb) => cb(null, user));
+    passport.deserializeUser((user: Express.User, cb) => cb(null, user));
+    return;
+  }
 
   const config = await getOidcConfig();
 
@@ -146,9 +237,10 @@ export async function setupAuth(app: Express) {
     passport.authenticate(`replitauth:${req.hostname}`, {
       successReturnToOrRedirect: "/",
       failureRedirect: "/api/login",
-    })(req, res, (err) => {
+    })(req, res, (err: unknown) => {
       if (err) {
-        console.error("[Auth Callback Error]:", err);
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        console.error("[Auth Callback Error]:", errorMessage, err);
         return res.redirect("/api/login");
       }
       
@@ -156,9 +248,11 @@ export async function setupAuth(app: Express) {
       console.log("[Auth Success] User authenticated via callback");
       
       // Special handling for session saving
-      req.session.save((saveErr) => {
+      req.session.save((saveErr: unknown) => {
         if (saveErr) {
-          console.error("[Session Save Error]:", saveErr);
+          const saveErrorMessage =
+            saveErr instanceof Error ? saveErr.message : String(saveErr);
+          console.error("[Session Save Error]:", saveErrorMessage, saveErr);
         } else {
           console.log("[Session Saved] Session ID:", req.sessionID);
         }
@@ -181,7 +275,7 @@ export async function setupAuth(app: Express) {
   });
 }
 
-export const isAuthenticated: RequestHandler = async (req, res, next) => {
+const replitIsAuthenticated: RequestHandler = async (req, res, next) => {
   console.log("[Auth Debug] Authentication request:", {
     path: req.path,
     hasUser: !!req.user,
@@ -198,7 +292,6 @@ export const isAuthenticated: RequestHandler = async (req, res, next) => {
       detail: "No user in session"
     });
   }
-  
   const user = req.user as any;
 
   // Double check authenticated status
@@ -275,3 +368,7 @@ export const isAuthenticated: RequestHandler = async (req, res, next) => {
     return res.redirect("/api/login");
   }
 };
+
+export const isAuthenticated: RequestHandler = replitEnabled
+  ? replitIsAuthenticated
+  : (_req, _res, next) => next();

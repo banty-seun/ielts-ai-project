@@ -50,35 +50,22 @@ export function useTaskContent(
     queryFn: async (): Promise<ApiOk> => {
       if (!taskId) throw new Error('Task ID is required');
 
-      // Call API (getFreshWithAuth ALWAYS returns Response or throws)
-      const res = await getFreshWithAuth(`/api/firebase/task-content/${taskId}`, getToken);
-
-      if (!res.ok) {
-        // Rich error message using json/text fallback
-        let details = '';
-        try {
-          const ct = res?.headers?.get ? res.headers.get('content-type') : null;
-          if (ct && ct.includes('application/json')) {
-            const j = await res.clone().json();
-            details = j?.message ? ` - ${j.message}` : ` - ${JSON.stringify(j)}`;
-          } else {
-            const t = await res.clone().text();
-            details = t ? ` - ${t.slice(0, 300)}` : '';
-          }
-        } catch {
-          // swallow parse errors
-        }
-        throw new Error(`Task content request failed (${res.status})${details}`);
-      }
-
-      // Parse JSON, clone first so body is not consumed by any future readers
       let data: ApiOk | ApiErr;
       try {
-        data = await res.clone().json();
-      } catch (e: any) {
-        const txt = await res.text().catch(() => '');
+        data = await getFreshWithAuth<ApiOk | ApiErr>(`/api/firebase/task-content/${taskId}`, getToken);
+      } catch (error: any) {
+        const status = error?.status;
+        const body = error?.body;
+        const detail =
+          typeof body === 'string'
+            ? body
+            : body && typeof body === 'object' && 'message' in body
+            ? (body as any).message
+            : '';
         throw new Error(
-          `Failed to parse task content JSON: ${e?.message ?? 'unknown'}${txt ? ` | raw="${txt.slice(0, 180)}"` : ''}`
+          detail
+            ? `Task content request failed${status ? ` (${status})` : ''} - ${detail}`
+            : error?.message || 'Task content request failed'
         );
       }
 

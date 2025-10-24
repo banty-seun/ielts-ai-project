@@ -1,0 +1,26 @@
+IELTS AI – Local Environment Setup (non-secret guide)
+===============================================
+
+Create the following files (values already prepared separately):
+
+1) server/.env — required keys:
+   - NODE_ENV
+   - PORT
+   - DATABASE_URL
+   - OPENAI_API_KEY
+   - AWS_ACCESS_KEY_ID
+   - AWS_SECRET_ACCESS_KEY
+   - AWS_REGION
+   - ENABLE_PLAN_DEBUG
+
+2) client/.env — required keys:
+   - VITE_API_BASE_URL
+   - VITE_FIREBASE_API_KEY
+   - VITE_FIREBASE_PROJECT_ID
+   - VITE_FIREBASE_APP_ID
+
+Notes:
+- Do NOT commit .env files. Ensure they are in .gitignore.
+- Set ENABLE_PLAN_DEBUG=0 for normal operation; flip to 1 only for diagnostics.
+- If Firebase private key contains literal \n sequences, keep the quotes in server/.env.
+- Start order: server first, then client. Verify /api/health if available.

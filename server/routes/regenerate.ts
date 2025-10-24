@@ -10,6 +10,13 @@ export function registerRegenerateRoutes(app: Express) {
       
       const result = await regenerateAndVerify(taskId);
       
+      if (!result) {
+        return res.status(500).json({
+          success: false,
+          error: "No result from regenerateAudio"
+        });
+      }
+
       if (result.ok) {
         res.json({
           success: true,
@@ -23,11 +30,12 @@ export function registerRegenerateRoutes(app: Express) {
           error: result.error
         });
       }
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('[API] Error in regenerate route:', error);
+      const message = error instanceof Error ? error.message : String(error);
       res.status(500).json({
         success: false,
-        error: error.message
+        error: message
       });
     }
   });
@@ -39,6 +47,13 @@ export function registerRegenerateRoutes(app: Express) {
       
       const result = await regenerateAndVerify(FAILING_TASK_ID);
       
+      if (!result) {
+        return res.status(500).json({
+          success: false,
+          error: "No result from regenerateAudio"
+        });
+      }
+
       if (result.ok) {
         res.json({
           success: true,
@@ -52,11 +67,12 @@ export function registerRegenerateRoutes(app: Express) {
           error: result.error
         });
       }
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('[API] Error regenerating failing task:', error);
+      const message = error instanceof Error ? error.message : String(error);
       res.status(500).json({
         success: false,
-        error: error.message
+        error: message
       });
     }
   });

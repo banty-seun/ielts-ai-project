@@ -100,7 +100,9 @@ export async function regenerateAndVerify(taskId: string) {
       });
       
       // Test public access immediately
-      await verifyPublicAccess(audioResult.audioUrl);
+      if (audioResult.audioUrl) {
+        await verifyPublicAccess(audioResult.audioUrl);
+      }
       
       return {
         ok: true,
@@ -111,9 +113,10 @@ export async function regenerateAndVerify(taskId: string) {
       console.error(`[REGEN] Failed to generate audio for ${taskId}`);
       return { ok: false, error: "Audio generation failed" };
     }
-  } catch (error) {
-    console.error(`[REGEN] Error regenerating ${taskId}:`, error.message);
-    return { ok: false, error: error.message };
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error(`[REGEN] Error regenerating ${taskId}:`, msg);
+    return { ok: false, error: msg };
   }
 }
 

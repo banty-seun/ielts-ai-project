@@ -637,16 +637,15 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
       }
       
       const onboardingData = validation.data;
-      
-      // Update onboarding status in database
-      await storage.updateOnboardingStatus(userId, true);
-      
+
       try {
         // Check debug mode flag
         const debugFlagEnabled = process.env.ENABLE_PLAN_DEBUG === "1";
         if (debugFlagEnabled) {
           console.log("[PlanGen][ROUTE] Debug mode enabled");
           const report = await generateIELTSPlan_debugWrapper(onboardingData);
+
+          await storage.updateOnboardingStatus(userId, true);
 
           return res.status(200).json({
             success: true,
@@ -657,121 +656,135 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
 
         console.log('[Plan API] Calling OpenAI to generate IELTS plan...');
         const plan = await generateIELTSPlan(onboardingData);
-        
-        // Save the main study plan to database
+
         const studyPlanId = uuidv4();
         const studyPlanData = {
           id: studyPlanId,
           userId: userId,
           fullName: onboardingData.fullName,
-          phoneNumber: onboardingData.phoneNumber || '',
+          phoneNumber: onboardingData.phoneNumber || "",
           targetBandScore: onboardingData.targetBandScore.toString(),
           testDate: onboardingData.testDate,
-          notDecided: onboardingData.notDecided ? 'true' : 'false',
+          notDecided: onboardingData.notDecided ? "true" : "false",
           skillRatings: onboardingData.skillRatings,
           immigrationGoal: onboardingData.immigrationGoal,
           studyPreferences: onboardingData.studyPreferences,
-          plan: plan
+          plan,
         };
-        
-        console.log('[Plan API] Saving main study plan to database...');
-        await storage.createStudyPlan(studyPlanData);
-        
-        // Extract and save weekly plans if they exist
-        if (plan.weeklyPlans && Array.isArray(plan.weeklyPlans)) {
-          console.log('[Plan API] Processing weekly plans for persistence...');
-          
-          for (const weeklyPlan of plan.weeklyPlans) {
-            const weekNumber = weeklyPlan.week;
-            
-            // Group activities by skill for each week
-            const skillActivities: {
-              listening: any[];
-              reading: any[];
-              writing: any[];
-              speaking: any[];
-              [key: string]: any[];
-            } = {
-              listening: [],
-              reading: [],
-              writing: [],
-              speaking: []
-            };
-            
-            // Process daily activities
-            if (weeklyPlan.days && Array.isArray(weeklyPlan.days)) {
-              for (const day of weeklyPlan.days) {
-                if (day.activities && Array.isArray(day.activities)) {
-                  for (const activity of day.activities) {
-                    const skill = activity.skill?.toLowerCase();
-                    if (skill && skill in skillActivities) {
-                      // Map day number to day name
-                      const dayName = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'][day.day - 1] || `Day ${day.day}`;
-                      
-                      skillActivities[skill].push({
-                        title: activity.title,
-                        day: dayName,
-                        duration: activity.duration || '30 min',
-                        status: 'not-started',
-                        skill: skill,
-                        accent: 'British', // Default accent
-                        description: activity.description,
-                        contextType: 'general',
-                        resources: activity.resources
-                      });
+
+        await storage.runInTransaction(async (txStorage) => {
+          console.log("[Plan API] Saving main study plan to database (transaction)...");
+          await txStorage.createStudyPlan(studyPlanData);
+
+          if (plan.weeklyPlans && Array.isArray(plan.weeklyPlans)) {
+            console.log("[Plan API] Processing weekly plans for persistence...");
+
+            for (const weeklyPlan of plan.weeklyPlans) {
+              const weekNumber = weeklyPlan.week;
+              const skillActivities: {
+                listening: any[];
+                reading: any[];
+                writing: any[];
+                speaking: any[];
+                [key: string]: any[];
+              } = {
+                listening: [],
+                reading: [],
+                writing: [],
+                speaking: [],
+              };
+
+              if (weeklyPlan.days && Array.isArray(weeklyPlan.days)) {
+                for (const day of weeklyPlan.days) {
+                  if (day.activities && Array.isArray(day.activities)) {
+                    for (const activity of day.activities) {
+                      const skill = activity.skill?.toLowerCase();
+                      if (skill && skill in skillActivities) {
+                        const dayName =
+                          ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"][day.day - 1] ||
+                          `Day ${day.day}`;
+
+                        skillActivities[skill].push({
+                          title: activity.title,
+                          day: dayName,
+                          duration: activity.duration || "30 min",
+                          status: "not-started",
+                          skill,
+                          accent: "British",
+                          description: activity.description,
+                          contextType: "general",
+                          resources: activity.resources,
+                        });
+                      }
                     }
                   }
                 }
               }
-            }
-            
-            // Save a weekly plan for each skill that has activities
-            for (const [skillFocus, activities] of Object.entries(skillActivities)) {
-              if (activities.length > 0) {
-                const weekFocus = weeklyPlan.goals?.join(', ') || `Week ${weekNumber} focus`;
+
+              for (const [skillFocus, activities] of Object.entries(skillActivities)) {
+                if (activities.length === 0) {
+                  continue;
+                }
+
+                const weekFocus = weeklyPlan.goals?.join(", ") || `Week ${weekNumber} focus`;
                 const planData = {
-                  weekFocus: weekFocus,
+                  weekFocus,
                   plan: activities,
-                  progressMetrics: weeklyPlan.progressMetrics || []
+                  progressMetrics: weeklyPlan.progressMetrics || [],
                 };
-                
+
                 console.log(`[Plan API] Saving weekly plan: Week ${weekNumber} - ${skillFocus}`);
-                const createdWeeklyPlan = await storage.createOrUpdateWeeklyStudyPlan(userId, weekNumber, skillFocus, weekFocus, planData);
-                
-                // Pre-generate scripts for listening tasks
-                if (skillFocus === 'listening' && activities.length > 0) {
+                const createdWeeklyPlan = await txStorage.createOrUpdateWeeklyStudyPlan(
+                  userId,
+                  weekNumber,
+                  skillFocus,
+                  weekFocus,
+                  planData,
+                );
+
+                if (skillFocus === "listening") {
                   const userLevel = onboardingData.skillRatings.listening || 1;
                   const targetBand = onboardingData.targetBandScore || 7;
-                  
-                  console.log(`[Plan API] Pre-generating scripts for ${activities.length} listening tasks`);
-                  const generatedScripts = await preGenerateScriptsForListeningTasks(
-                    userId, 
-                    createdWeeklyPlan.id, 
-                    weekNumber, 
-                    activities, 
-                    userLevel, 
-                    targetBand
+
+                  console.log(
+                    `[Plan API] Pre-generating scripts for ${activities.length} listening tasks`,
                   );
-                  
-                  // Store the generated scripts in the plan data for later use during task initialization
+                  const generatedScripts = await preGenerateScriptsForListeningTasks(
+                    userId,
+                    createdWeeklyPlan.id,
+                    weekNumber,
+                    activities,
+                    userLevel,
+                    targetBand,
+                  );
+
                   if (generatedScripts.length > 0) {
                     const updatedPlanData = {
                       ...planData,
-                      preGeneratedScripts: generatedScripts
+                      preGeneratedScripts: generatedScripts,
                     };
-                    
-                    // Update the weekly plan with pre-generated scripts
-                    await storage.createOrUpdateWeeklyStudyPlan(userId, weekNumber, skillFocus, weekFocus, updatedPlanData);
-                    console.log(`[Plan API] Stored ${generatedScripts.length} pre-generated scripts in weekly plan`);
+
+                    await txStorage.createOrUpdateWeeklyStudyPlan(
+                      userId,
+                      weekNumber,
+                      skillFocus,
+                      weekFocus,
+                      updatedPlanData,
+                    );
+                    console.log(
+                      `[Plan API] Stored ${generatedScripts.length} pre-generated scripts in weekly plan`,
+                    );
                   }
                 }
               }
             }
           }
-        }
-        
-        console.log('[Plan API] Study plan and weekly plans saved successfully');
-        
+
+          await txStorage.updateOnboardingStatus(userId, true);
+        });
+
+        console.log("[Plan API] Study plan and weekly plans saved successfully");
+
         // Return success with plan ID
         return res.status(200).json({
           success: true,

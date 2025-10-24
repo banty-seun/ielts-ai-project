@@ -359,33 +359,67 @@ export async function postJsonWithAuth(
 // These functions are used directly with getToken from FirebaseAuthContext
 // Example usage:
 // const { getToken } = useFirebaseAuthContext();
-// IMPORTANT: This function now returns Response, not parsed JSON
-export async function getFreshWithAuth(path: string, getToken: () => Promise<string | null>): Promise<Response> {
-  // Validate getToken parameter
-  if (typeof getToken !== 'function') {
-    throw new Error('getToken is not a function');
+// Returns parsed JSON (or throws) instead of raw Response
+export async function getFreshWithAuth<T = unknown>(
+  path: string,
+  getToken: () => Promise<string | null>
+): Promise<T> {
+  if (typeof getToken !== "function") {
+    throw new Error("getToken is not a function");
   }
-  
-  // IMPORTANT: declare before use (prevents implicit global / TDZ bugs)
+
   let res: Response;
-  
+
   try {
     res = await apiRequestWithFreshToken(path, {}, getToken);
   } catch (e: any) {
-    throw new Error(`apiRequestWithFreshToken failed: ${e?.message ?? 'unknown'}`);
+    throw new Error(`apiRequestWithFreshToken failed: ${e?.message ?? "unknown"}`);
   }
-  
-  // Null-safe headers access; never assume headers exists
-  const contentType = res?.headers?.get ? res.headers.get('content-type') : null;
-  debugLog('[API][getFreshWithAuth][return]', {
+
+  const contentType = res?.headers?.get ? res.headers.get("content-type") : null;
+  debugLog("[API][getFreshWithAuth][response]", {
     url: path,
     ok: res?.ok,
     status: res?.status,
     contentType,
   });
-  
-  // Always return a real Response object; never undefined/null
-  return res;
+
+  if (!res.ok) {
+    let body: unknown = undefined;
+    try {
+      body = await res.clone().json();
+    } catch {
+      try {
+        body = await res.clone().text();
+      } catch {
+        body = undefined;
+      }
+    }
+    const err = new Error(`HTTP ${res.status} ${res.statusText || ""}`.trim());
+    (err as any).status = res.status;
+    (err as any).body = body;
+    throw err;
+  }
+
+  if (res.status === 204 || res.headers.get("content-length") === "0") {
+    return undefined as T;
+  }
+
+  try {
+    const data = (await res.json()) as T;
+    debugLog("[API][getFreshWithAuth][parsed]", {
+      url: path,
+      parsed: true,
+    });
+    return data;
+  } catch (err: any) {
+    const text = await res.text().catch(() => "");
+    const parseErr = new Error(
+      `Failed to parse JSON response: ${err?.message ?? "unknown"}${text ? ` | raw="${text.slice(0, 200)}"` : ""}`,
+    );
+    (parseErr as any).status = res.status;
+    throw parseErr;
+  }
 }
 
 export async function postFreshWithAuth<T>(

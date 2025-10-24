@@ -1,0 +1,173 @@
+[dotenv@17.2.3] injecting env (0) from .env -- tip: 🔄 add secrets lifecycle management: https://dotenvx.com/ops
+[dotenv@17.2.3] injecting env (10) from server/.env -- tip: 👥 sync secrets across teammates & machines: https://dotenvx.com/ops
+[Firebase Admin] Initialized Firebase Admin with project ID: ielts-ai-a0f3b
+[Firebase Admin] Note: Using hardcoded project ID "ielts-ai-a0f3b" to match the frontend
+2:00:19 AM [vite] (client) Re-optimizing dependencies because lockfile has changed
+[BindDebug] host: 127.0.0.1 port: 3000 envPortRaw: 3000 isNumeric: true
+[BindDebug] typeof host: string typeof port: number
+[BindDebug] net.isIP(host): 4
+[BindDebug] process.versions: {
+  node: '22.20.0',
+  acorn: '8.15.0',
+  ada: '2.9.2',
+  amaro: '1.1.2',
+  ares: '1.34.5',
+  brotli: '1.1.0',
+  cjs_module_lexer: '2.1.0',
+  cldr: '47.0',
+  icu: '77.1',
+  llhttp: '9.3.0',
+  modules: '127',
+  napi: '10',
+  nbytes: '0.1.1',
+  ncrypto: '0.0.1',
+  nghttp2: '1.64.0',
+  openssl: '3.5.2',
+  simdjson: '3.13.0',
+  simdutf: '6.4.2',
+  sqlite: '3.50.4',
+  tz: '2025b',
+  undici: '6.21.2',
+  unicode: '16.0',
+  uv: '1.51.0',
+  uvwasi: '0.0.23',
+  v8: '12.4.254.21-node.33',
+  zlib: '1.3.1-470d3a2',
+  zstd: '1.5.7'
+}
+[BindDebug] os.platform: darwin os.release: 24.5.0
+[BindDebug] REPL* snapshot: {
+  REPL_ID: false,
+  REPLIT_DB_URL: false,
+  REPLIT_DEPLOYMENT: false,
+  REPLIT_APP_NAME: false
+}
+[BindDebug] dns.lookup: { err: false, addr: '127.0.0.1', fam: 4 }
+2:00:19 AM [express] [Startup] Server listening on http://127.0.0.1:3000
+[Firebase Auth] Verifying token for request: /api/firebase/auth/onboarding-status
+[Firebase Auth] Request headers: { hasAuth: true, authType: 'Bearer', tokenPresent: true }
+[Firebase Admin] Verifying token (cache miss): {
+  tokenLength: 933,
+  tokenStart: 'eyJhbGciOi...',
+  tokenEnd: '...b0CaAkFG-Q'
+}
+[Firebase Admin] Token verified and cached: {
+  uid: 'SUFrMcRRMzdyoXFBTpwId44hyqq2',
+  email: 'oluwaseunbanty@gmail.com',
+  issuer: 'https://securetoken.google.com/ielts-ai-a0f3b',
+  tokenExpires: '2025-10-22T01:44:40.000Z',
+  cacheExpires: '2025-10-22T01:39:40.000Z'
+}
+[Firebase Auth] User authenticated: SUFrMcRRMzdyoXFBTpwId44hyqq2
+[Firebase Auth] Processing user with Firebase UID: SUFrMcRRMzdyoXFBTpwId44hyqq2, Email: oluwaseunbanty@gmail.com
+[Firebase Auth] Error ensuring user: TypeError: this.orm.select is not a function
+    at DatabaseStorage.getUserByFirebaseUid (/Users/oluwaseunbantale/ielts-ai-project/server/storage.ts:115:35)
+    at ensureFirebaseUser (/Users/oluwaseunbantale/ielts-ai-project/server/firebaseAuth.ts:170:30)
+    at Layer.handle [as handle_request] (/Users/oluwaseunbantale/ielts-ai-project/node_modules/express/lib/router/layer.js:95:5)
+    at next (/Users/oluwaseunbantale/ielts-ai-project/node_modules/express/lib/router/route.js:149:13)
+    at verifyFirebaseAuth (/Users/oluwaseunbantale/ielts-ai-project/server/firebaseAuth.ts:135:5)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+[Firebase Auth] Verifying token for request: /api/firebase/auth/onboarding-status
+[Firebase Auth] Request headers: { hasAuth: true, authType: 'Bearer', tokenPresent: true }
+[Firebase Admin] Using cached token verification: {
+  uid: 'SUFrMcRRMzdyoXFBTpwId44hyqq2',
+  cacheTimeRemaining: '35 minutes'
+}
+[Firebase Auth] User authenticated: SUFrMcRRMzdyoXFBTpwId44hyqq2
+[Firebase Auth] Processing user with Firebase UID: SUFrMcRRMzdyoXFBTpwId44hyqq2, Email: oluwaseunbanty@gmail.com
+[Firebase Auth] Error ensuring user: TypeError: this.orm.select is not a function
+    at DatabaseStorage.getUserByFirebaseUid (/Users/oluwaseunbantale/ielts-ai-project/server/storage.ts:115:35)
+    at ensureFirebaseUser (/Users/oluwaseunbantale/ielts-ai-project/server/firebaseAuth.ts:170:30)
+    at Layer.handle [as handle_request] (/Users/oluwaseunbantale/ielts-ai-project/node_modules/express/lib/router/layer.js:95:5)
+    at next (/Users/oluwaseunbantale/ielts-ai-project/node_modules/express/lib/router/route.js:149:13)
+    at verifyFirebaseAuth (/Users/oluwaseunbantale/ielts-ai-project/server/firebaseAuth.ts:135:5)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+2:04:38 AM [express] GET /api/firebase/auth/onboarding-status 500 in 13ms :: {"message":"Server erro…
+[Firebase Auth] Verifying token for request: /api/firebase/auth/onboarding-status
+[Firebase Auth] Request headers: { hasAuth: true, authType: 'Bearer', tokenPresent: true }
+[Firebase Admin] Using cached token verification: {
+  uid: 'SUFrMcRRMzdyoXFBTpwId44hyqq2',
+  cacheTimeRemaining: '35 minutes'
+}
+[Firebase Auth] User authenticated: SUFrMcRRMzdyoXFBTpwId44hyqq2
+[Firebase Auth] Processing user with Firebase UID: SUFrMcRRMzdyoXFBTpwId44hyqq2, Email: oluwaseunbanty@gmail.com
+[Firebase Auth] Error ensuring user: TypeError: this.orm.select is not a function
+    at DatabaseStorage.getUserByFirebaseUid (/Users/oluwaseunbantale/ielts-ai-project/server/storage.ts:115:35)
+    at ensureFirebaseUser (/Users/oluwaseunbantale/ielts-ai-project/server/firebaseAuth.ts:170:30)
+    at Layer.handle [as handle_request] (/Users/oluwaseunbantale/ielts-ai-project/node_modules/express/lib/router/layer.js:95:5)
+    at next (/Users/oluwaseunbantale/ielts-ai-project/node_modules/express/lib/router/route.js:149:13)
+    at verifyFirebaseAuth (/Users/oluwaseunbantale/ielts-ai-project/server/firebaseAuth.ts:135:5)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+2:04:38 AM [express] GET /api/firebase/auth/onboarding-status 500 in 1ms :: {"message":"Server error…
+[Firebase Auth] Verifying token for request: /api/plan/generate
+[Firebase Auth] Request headers: { hasAuth: true, authType: 'Bearer', tokenPresent: true }
+[Firebase Admin] Verifying token (cache miss): {
+  tokenLength: 933,
+  tokenStart: 'eyJhbGciOi...',
+  tokenEnd: '...aM6VT2dB1A'
+}
+[Firebase Admin] Token verified and cached: {
+  uid: 'SUFrMcRRMzdyoXFBTpwId44hyqq2',
+  email: 'oluwaseunbanty@gmail.com',
+  issuer: 'https://securetoken.google.com/ielts-ai-a0f3b',
+  tokenExpires: '2025-10-22T02:04:39.000Z',
+  cacheExpires: '2025-10-22T01:59:39.000Z'
+}
+[Firebase Auth] User authenticated: SUFrMcRRMzdyoXFBTpwId44hyqq2
+[Firebase Auth] Processing user with Firebase UID: SUFrMcRRMzdyoXFBTpwId44hyqq2, Email: oluwaseunbanty@gmail.com
+[Firebase Auth] Error ensuring user: TypeError: this.orm.select is not a function
+    at DatabaseStorage.getUserByFirebaseUid (/Users/oluwaseunbantale/ielts-ai-project/server/storage.ts:115:35)
+    at ensureFirebaseUser (/Users/oluwaseunbantale/ielts-ai-project/server/firebaseAuth.ts:170:30)
+    at Layer.handle [as handle_request] (/Users/oluwaseunbantale/ielts-ai-project/node_modules/express/lib/router/layer.js:95:5)
+    at next (/Users/oluwaseunbantale/ielts-ai-project/node_modules/express/lib/router/route.js:149:13)
+    at verifyFirebaseAuth (/Users/oluwaseunbantale/ielts-ai-project/server/firebaseAuth.ts:135:5)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+2:05:15 AM [express] POST /api/plan/generate 500 in 3ms :: {"message":"Server error","detail":"Faile…
+[Firebase Admin] Token verification metrics: {
+  timeWindow: '5 minutes',
+  totalVerifications: 4,
+  cacheHits: 2,
+  cacheMisses: 2,
+  errors: 0,
+  hitRate: '50%'
+}
+[Firebase Auth] Verifying token for request: /api/firebase/auth/onboarding-status
+[Firebase Auth] Request headers: { hasAuth: true, authType: 'Bearer', tokenPresent: true }
+[Firebase Admin] Using cached token verification: {
+  uid: 'SUFrMcRRMzdyoXFBTpwId44hyqq2',
+  cacheTimeRemaining: '50 minutes'
+}
+[Firebase Auth] User authenticated: SUFrMcRRMzdyoXFBTpwId44hyqq2
+[Firebase Auth] Processing user with Firebase UID: SUFrMcRRMzdyoXFBTpwId44hyqq2, Email: oluwaseunbanty@gmail.com
+[Firebase Auth] Error ensuring user: TypeError: this.orm.select is not a function
+    at DatabaseStorage.getUserByFirebaseUid (/Users/oluwaseunbantale/ielts-ai-project/server/storage.ts:115:35)
+    at ensureFirebaseUser (/Users/oluwaseunbantale/ielts-ai-project/server/firebaseAuth.ts:170:30)
+    at Layer.handle [as handle_request] (/Users/oluwaseunbantale/ielts-ai-project/node_modules/express/lib/router/layer.js:95:5)
+    at next (/Users/oluwaseunbantale/ielts-ai-project/node_modules/express/lib/router/route.js:149:13)
+    at verifyFirebaseAuth (/Users/oluwaseunbantale/ielts-ai-project/server/firebaseAuth.ts:135:5)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+2:10:04 AM [express] GET /api/firebase/auth/onboarding-status 500 in 25ms :: {"message":"Server erro…
+[Firebase Auth] Verifying token for request: /api/firebase/auth/onboarding-status
+[Firebase Auth] Request headers: { hasAuth: true, authType: 'Bearer', tokenPresent: true }
+[Firebase Admin] Using cached token verification: {
+  uid: 'SUFrMcRRMzdyoXFBTpwId44hyqq2',
+  cacheTimeRemaining: '50 minutes'
+}
+[Firebase Auth] User authenticated: SUFrMcRRMzdyoXFBTpwId44hyqq2
+[Firebase Auth] Processing user with Firebase UID: SUFrMcRRMzdyoXFBTpwId44hyqq2, Email: oluwaseunbanty@gmail.com
+[Firebase Auth] Error ensuring user: TypeError: this.orm.select is not a function
+    at DatabaseStorage.getUserByFirebaseUid (/Users/oluwaseunbantale/ielts-ai-project/server/storage.ts:115:35)
+    at ensureFirebaseUser (/Users/oluwaseunbantale/ielts-ai-project/server/firebaseAuth.ts:170:30)
+    at Layer.handle [as handle_request] (/Users/oluwaseunbantale/ielts-ai-project/node_modules/express/lib/router/layer.js:95:5)
+    at next (/Users/oluwaseunbantale/ielts-ai-project/node_modules/express/lib/router/route.js:149:13)
+    at verifyFirebaseAuth (/Users/oluwaseunbantale/ielts-ai-project/server/firebaseAuth.ts:135:5)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+2:10:04 AM [express] GET /api/firebase/auth/onboarding-status 500 in 4ms :: {"message":"Server error…
+[Firebase Admin] Token verification metrics: {
+  timeWindow: '10 minutes',
+  totalVerifications: 6,
+  cacheHits: 4,
+  cacheMisses: 2,
+  errors: 0,
+  hitRate: '67%'
+}
