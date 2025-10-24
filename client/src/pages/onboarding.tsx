@@ -73,10 +73,11 @@ function FullNameStep() {
   }, [onboardingData.phoneNumber]);
 
   const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    // Sanitize and trim input
-    const newName = e.target.value.trim();
-    dispatch({ type: 'SET_FULL_NAME', payload: newName });
-    setIsNameValid(!!newName);
+    // Allow spaces inside the name while collapsing accidental doubles
+    const rawValue = e.target.value;
+    const sanitizedValue = rawValue.replace(/\s{2,}/g, " ");
+    dispatch({ type: 'SET_FULL_NAME', payload: sanitizedValue });
+    setIsNameValid(sanitizedValue.trim().length > 0);
   };
 
   const handlePhoneChange = (value: string | undefined) => {

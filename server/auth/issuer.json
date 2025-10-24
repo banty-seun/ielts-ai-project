@@ -1,0 +1,8 @@
+{
+  "issuer": "https://offline.replit.local",
+  "authorization_endpoint": "https://offline.replit.local/auth",
+  "token_endpoint": "https://offline.replit.local/token",
+  "userinfo_endpoint": "https://offline.replit.local/userinfo",
+  "jwks_uri": "https://offline.replit.local/jwks",
+  "end_session_endpoint": "https://offline.replit.local/logout"
+}

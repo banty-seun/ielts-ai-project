@@ -13,6 +13,8 @@ import { logFirestoreMetricsSummary, resetFirestoreMetrics } from '@/lib/firesto
 export function FirebaseMetricsDebug() {
   const [metrics, setMetrics] = useState<any>(null);
   const [expanded, setExpanded] = useState(false);
+  const printableCount = (value: unknown): string | number =>
+    typeof value === 'number' || typeof value === 'string' ? value : String(value);
   
   // Only show in development mode
   if (process.env.NODE_ENV !== 'development') {
@@ -127,7 +129,9 @@ export function FirebaseMetricsDebug() {
                       {topReadComponents.map(([component, count]) => (
                         <div key={component} className="flex justify-between text-xs bg-slate-800 p-1 rounded">
                           <span className="truncate">{component}</span>
-                          <span className="text-amber-400">{count}</span>
+                          <span className="text-amber-400">
+                            {printableCount(count)}
+                          </span>
                         </div>
                       ))}
                     </div>
@@ -139,7 +143,9 @@ export function FirebaseMetricsDebug() {
                       {topReadCollections.map(([collection, count]) => (
                         <div key={collection} className="flex justify-between text-xs bg-slate-800 p-1 rounded">
                           <span className="truncate">{collection}</span>
-                          <span className="text-amber-400">{count}</span>
+                          <span className="text-amber-400">
+                            {printableCount(count)}
+                          </span>
                         </div>
                       ))}
                     </div>
@@ -161,7 +167,9 @@ export function FirebaseMetricsDebug() {
                     {topWriteComponents.map(([component, count]) => (
                       <div key={component} className="flex justify-between text-xs bg-slate-800 p-1 rounded">
                         <span className="truncate">{component}</span>
-                        <span className="text-blue-400">{count}</span>
+                        <span className="text-blue-400">
+                          {printableCount(count)}
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -173,7 +181,9 @@ export function FirebaseMetricsDebug() {
                     {topWriteCollections.map(([collection, count]) => (
                       <div key={collection} className="flex justify-between text-xs bg-slate-800 p-1 rounded">
                         <span className="truncate">{collection}</span>
-                        <span className="text-blue-400">{count}</span>
+                        <span className="text-blue-400">
+                          {printableCount(count)}
+                        </span>
                       </div>
                     ))}
                   </div>

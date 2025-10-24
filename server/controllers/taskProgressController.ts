@@ -264,7 +264,7 @@ export const startTask = async (req: any, res: Response) => {
               accent: scriptResult.accent!,
               scriptType: scriptResult.scriptType!,
               difficulty: scriptResult.difficulty!,
-              duration: scriptResult.estimatedDuration!
+              duration: scriptResult.estimatedDurationSec!
             });
             
             console.log(`[Task Progress API] Fallback script generated successfully for "${taskProgressRecord.taskTitle}"`);

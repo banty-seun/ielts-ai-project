@@ -1,7 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest, getQueryFn } from "@lib/queryClient";
-import { getToken } from "@lib/tokenManager";
-import { patchFreshWithAuth } from "@lib/freshFetch";
 import { useFirestoreOpTracker } from "./useFirestoreOps";
 
 // Define task progress types
@@ -66,7 +64,7 @@ export function useTaskProgress({ weeklyPlanId, onSuccess, onError }: UseTaskPro
   console.log(`[useTaskProgress] Using endpoint with ID: ${weeklyPlanId} (ID type: ${isTaskId ? 'task progress' : 'weekly plan'})`);
   console.log(`[useTaskProgress] Full endpoint URL: ${endpoint}`);
   
-  const taskProgressQuery = useQuery({
+  const taskProgressQuery = useQuery<TaskProgressResponse, Error, { taskProgress: TaskProgress[] }>({
     queryKey: [endpoint],
     queryFn: async (ctx) => {
       // Track the firestore read that will occur
@@ -75,7 +73,8 @@ export function useTaskProgress({ weeklyPlanId, onSuccess, onError }: UseTaskPro
       
       try {
         // Use the existing query function
-        const result = await getQueryFn({ on401: "returnNull" })(ctx);
+        const queryFn = getQueryFn<TaskProgressResponse>({ on401: "returnNull" });
+        const result = await queryFn(ctx);
         console.log('[useTaskProgress] Fetch result:', result);
         return result;
       } catch (error: any) {
@@ -91,33 +90,34 @@ export function useTaskProgress({ weeklyPlanId, onSuccess, onError }: UseTaskPro
       }
     },
     select: (data): { taskProgress: TaskProgress[] } => {
-      // If we requested a single task progress by ID and got a single object,
-      // wrap it in an array for consistent handling
-      if (isTaskId && data?.success && !Array.isArray(data?.taskProgress)) {
-        return { taskProgress: [data.taskProgress].filter(Boolean) };
+      if (!data?.success) {
+        return { taskProgress: [] };
       }
-      
-      // If task progress is array, use it, otherwise ensure we return an array
-      return { 
-        taskProgress: Array.isArray(data?.taskProgress) 
-          ? data.taskProgress 
-          : (data?.taskProgress ? [data.taskProgress] : [])
-      };
+
+      const { taskProgress } = data;
+
+      if (Array.isArray(taskProgress)) {
+        return { taskProgress };
+      }
+
+      if (taskProgress) {
+        return { taskProgress: [taskProgress] };
+      }
+
+      return { taskProgress: [] };
     }
   });
 
   // Function to create a new task progress
-  const createTaskProgressMutation = useMutation({
-    mutationFn: async (data: { weeklyPlanId: string; weekNumber: number; dayNumber: number; taskTitle: string }) => {
+  const createTaskProgressMutation = useMutation<TaskProgressResponse, Error, { weeklyPlanId: string; weekNumber: number; dayNumber: number; taskTitle: string }>({
+    mutationFn: async (data) => {
       // Track the firestore write that will occur
       taskProgressTracker.trackWrite('task_progress', 1);
       
       console.log(`[useTaskProgress] Creating task progress:`, data);
       
-      return apiRequest('/api/firebase/task-progress', {
-        method: 'POST',
-        body: data,
-      });
+      const response = await apiRequest("POST", "/api/firebase/task-progress", data);
+      return (await response.json()) as TaskProgressResponse;
     },
     onSuccess: (data: TaskProgressResponse) => {
       console.log('[useTaskProgress] Task progress created successfully:', data);
@@ -132,17 +132,19 @@ export function useTaskProgress({ weeklyPlanId, onSuccess, onError }: UseTaskPro
   });
 
   // Function to start a task
-  const startTaskMutation = useMutation({
-    mutationFn: async ({ taskId, progressData }: { taskId: string; progressData?: any }) => {
+  const startTaskMutation = useMutation<TaskProgressResponse, Error, { taskId: string; progressData?: any }>({
+    mutationFn: async ({ taskId, progressData }) => {
       // Track write operation
       taskProgressTracker.trackWrite('task_progress', 1);
       
       console.log(`[useTaskProgress] Starting task: taskId=${taskId}`);
       
-      return apiRequest(`/api/firebase/task-progress/${taskId}/start`, {
-        method: 'PATCH',
-        body: { progressData },
-      });
+      const response = await apiRequest(
+        "PATCH",
+        `/api/firebase/task-progress/${taskId}/start`,
+        { progressData }
+      );
+      return (await response.json()) as TaskProgressResponse;
     },
     onSuccess: (data: TaskProgressResponse) => {
       console.log('[useTaskProgress] Task started successfully:', data);
@@ -156,17 +158,19 @@ export function useTaskProgress({ weeklyPlanId, onSuccess, onError }: UseTaskPro
   });
 
   // Function to complete a task
-  const completeTaskMutation = useMutation({
-    mutationFn: async ({ taskId, progressData }: { taskId: string; progressData?: any }) => {
+  const completeTaskMutation = useMutation<TaskProgressResponse, Error, { taskId: string; progressData?: any }>({
+    mutationFn: async ({ taskId, progressData }) => {
       // Track write operation
       taskProgressTracker.trackWrite('task_progress', 1);
       
       console.log(`[useTaskProgress] Completing task: taskId=${taskId}`);
       
-      return apiRequest(`/api/firebase/task-progress/${taskId}/complete`, {
-        method: 'PATCH',
-        body: { progressData },
-      });
+      const response = await apiRequest(
+        "PATCH",
+        `/api/firebase/task-progress/${taskId}/complete`,
+        { progressData }
+      );
+      return (await response.json()) as TaskProgressResponse;
     },
     onSuccess: (data: TaskProgressResponse) => {
       console.log('[useTaskProgress] Task completed successfully:', data);
@@ -180,29 +184,30 @@ export function useTaskProgress({ weeklyPlanId, onSuccess, onError }: UseTaskPro
   });
 
   // Function to update a task status (generic)
-  const updateTaskStatusMutation = useMutation({
-    mutationFn: async ({ taskId, status, progressData }: { taskId: string; status: 'not-started' | 'in-progress' | 'completed'; progressData?: any }) => {
+  const updateTaskStatusMutation = useMutation<TaskProgressResponse, Error, { taskId: string; status: 'not-started' | 'in-progress' | 'completed'; progressData?: any }>({
+    mutationFn: async ({ taskId, status, progressData }) => {
       // Track write operation
       taskProgressTracker.trackWrite('task_progress', 1);
       
       console.log(`[useTaskProgress] Updating task status: taskId=${taskId}, status=${status}`);
       
       // Determine the appropriate endpoint based on status
-      let endpoint;
+      let mutationEndpoint: string;
       if (status === 'in-progress') {
-        endpoint = `/api/firebase/task-progress/${taskId}/start`;
+        mutationEndpoint = `/api/firebase/task-progress/${taskId}/start`;
       } else if (status === 'completed') {
-        endpoint = `/api/firebase/task-progress/${taskId}/complete`;
+        mutationEndpoint = `/api/firebase/task-progress/${taskId}/complete`;
       } else {
         // Fallback for 'not-started' or any other status
         console.warn(`[useTaskProgress] Using generic status update for status: ${status}`);
-        endpoint = `/api/firebase/task-progress/${taskId}/status`;
+        mutationEndpoint = `/api/firebase/task-progress/${taskId}/status`;
       }
       
-      return apiRequest(endpoint, {
-        method: 'PATCH',
-        body: { status, progressData },
+      const response = await apiRequest("PATCH", mutationEndpoint, {
+        status,
+        progressData,
       });
+      return (await response.json()) as TaskProgressResponse;
     },
     onSuccess: (data: TaskProgressResponse) => {
       console.log('[useTaskProgress] Task status updated successfully:', data);
@@ -262,13 +267,15 @@ export function useInitializeTaskProgress(weeklyPlanId: string, tasks: any[]) {
         initialStatus: 'not-started'
       }));
       
-      return apiRequest('/api/firebase/task-progress/batch-initialize', {
-        method: 'POST',
-        body: {
+      const response = await apiRequest(
+        "POST",
+        "/api/firebase/task-progress/batch-initialize",
+        {
           weeklyPlanId,
-          tasks: formattedTasks
-        },
-      });
+          tasks: formattedTasks,
+        }
+      );
+      return response.json();
     },
     onSuccess: (data: any) => {
       console.log('[useInitializeTaskProgress] Tasks initialized successfully:', data);

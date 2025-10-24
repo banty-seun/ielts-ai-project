@@ -154,6 +154,8 @@ export const verifyFirebaseAuth = async (req: Request, res: Response, next: Next
  * Must be used after verifyFirebaseAuth
  */
 export const ensureFirebaseUser = async (req: Request, res: Response, next: NextFunction) => {
+  const DEBUG = process.env.NODE_ENV !== 'production';
+
   if (!req.firebaseUser) {
     return res.status(401).json({ 
       message: 'Unauthorized',
@@ -206,7 +208,7 @@ export const ensureFirebaseUser = async (req: Request, res: Response, next: Next
         });
       } 
       // STEP 3: If still not found and we have an email, try username lookup as fallback
-      else {
+      else if (req.firebaseUser.email) {
         const generatedUsername = req.firebaseUser.email.split('@')[0];
         DEBUG && console.log(`[Firebase Auth] User not found by email, searching by username: ${generatedUsername}`);
         
