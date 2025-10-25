@@ -181,26 +181,31 @@ export interface TaskAttempt {
 }
 
 export const insertStudyPlanSchema = createInsertSchema(studyPlans, {
-  skillRatings: z.record(z.string(), z.number()),
-  studyPreferences: z.record(z.string(), z.string()),
-  plan: z.record(z.string(), z.any()),
+  skillRatings: (_schema) => z.record(z.string(), z.number()) as any,
+  studyPreferences: (_schema) => z.record(z.string(), z.string()) as any,
+  plan: (_schema) => z.record(z.string(), z.any()) as any,
 });
 
 export const insertWeeklyStudyPlanSchema = createInsertSchema(weeklyStudyPlans, {
-  planData: z.record(z.string(), z.any()),
+  planData: (_schema) => z.record(z.string(), z.any()) as any,
 });
 
 export const insertTaskProgressSchema = createInsertSchema(taskProgress, {
-  progressData: z.record(z.string(), z.any()).optional(),
-  questions: z.array(
-    z.object({
-      id: z.string(),
-      question: z.string(),
-      options: z.array(z.object({ id: z.string(), text: z.string() })).optional(),
-      correctAnswer: z.string().optional(),
-      explanation: z.string().optional()
-    })
-  ).optional(),
+  progressData: (_schema) => z.record(z.string(), z.any()).optional() as any,
+  questions: (_schema) =>
+    z
+      .array(
+        z.object({
+          id: z.string(),
+          question: z.string(),
+          options: z
+            .array(z.object({ id: z.string(), text: z.string() }))
+            .optional(),
+          correctAnswer: z.string().optional(),
+          explanation: z.string().optional(),
+        }),
+      )
+      .optional() as any,
 });
 
 // Task content update schema for the PATCH endpoint
@@ -226,4 +231,5 @@ export const taskContentUpdateSchema = z.object({
   contextLabel: z.string().optional(),
   scenarioOverview: z.string().optional(),
   estimatedDurationSec: z.number().optional(),
+  taskTitle: z.string().optional(),
 });

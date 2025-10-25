@@ -1,9 +1,16 @@
 import { PollyClient, SynthesizeSpeechCommand, Engine, OutputFormat, VoiceId } from "@aws-sdk/client-polly";
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { uploadPollyMp3 } from "./audio/uploadPollyMp3";
+import { normalizeAccent } from "./utils/audio.ts";
 
 // Initialize AWS clients
+const DEFAULT_AUDIO_BUCKET = "ielts-ai-audio";
 const awsRegion = (process.env.AWS_REGION || "eu-west-2").trim();
+const resolvedBucket = process.env.AWS_S3_BUCKET?.trim();
+const audioBucket =
+  resolvedBucket && resolvedBucket.length > 0 ? resolvedBucket : DEFAULT_AUDIO_BUCKET;
+const usingDefaultBucket = !resolvedBucket || resolvedBucket.length === 0;
+let defaultBucketWarningLogged = false;
 
 const pollyClient = new PollyClient({ 
   region: awsRegion 
@@ -45,19 +52,27 @@ export async function generateAudioFromScript(
 }> {
   try {
     // Validate required AWS environment variables
-    if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+    if (!process.env.AWS_ACCESS_KEY_ID?.trim() || !process.env.AWS_SECRET_ACCESS_KEY?.trim()) {
       throw new Error("AWS credentials not configured. Please set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY");
     }
 
-    if (!process.env.AWS_S3_BUCKET) {
-      throw new Error("AWS S3 bucket not configured. Please set AWS_S3_BUCKET environment variable");
+    if (!audioBucket) {
+      throw new Error("AWS S3 bucket not configured and no default bucket available");
     }
 
+    if (usingDefaultBucket && !defaultBucketWarningLogged) {
+      console.warn(`[Audio Generation] AWS_S3_BUCKET not set; using default bucket "${audioBucket}"`);
+      defaultBucketWarningLogged = true;
+    }
+
+    const normalizedAccent = normalizeAccent(accent);
+
     // Map accent to Neural voice (default to British if not found)
-    const voiceId = accentVoiceMap[accent] || accentVoiceMap.British;
+    const voiceId = accentVoiceMap[normalizedAccent] || accentVoiceMap.British;
     
     console.log(`[Audio Generation] Generating audio for task ${taskId}:`, {
-      accent,
+      requestedAccent: accent,
+      normalizedAccent,
       voiceId,
       scriptLength: scriptText.length,
       weekNumber,
@@ -156,7 +171,7 @@ export async function generateAudioFromScript(
       userId,
       weekNumber,
       taskId,
-      accent: accent.toLowerCase(),
+      accent: normalizedAccent.toLowerCase(),
       audioBuffer, // Buffer returned from Polly
     });
 
@@ -164,7 +179,8 @@ export async function generateAudioFromScript(
       audioUrl,
       duration: estimatedDuration,
       fileSize: audioBuffer.length,
-      voice: voiceId
+      voice: voiceId,
+      accent: normalizedAccent
     });
 
     return {
@@ -186,15 +202,19 @@ export async function generateAudioFromScript(
     console.error(`[Audio Debug] Script text that failed: "${scriptText}"`);
     console.error(`[Audio Debug] Script length: ${scriptText.length} characters`);
     console.error(`[Audio Debug] Requested accent: ${accent}`);
-    console.error(`[Audio Debug] Selected voice ID: ${accentVoiceMap[accent] || accentVoiceMap.British}`);
+    console.error(`[Audio Debug] Normalized accent: ${normalizeAccent(accent)}`);
+    console.error(`[Audio Debug] Selected voice ID: ${accentVoiceMap[normalizeAccent(accent)] || accentVoiceMap.British}`);
     console.error(`[Audio Debug] AWS Region: ${awsRegion}`);
-    console.error(`[Audio Debug] S3 Bucket: ${process.env.AWS_S3_BUCKET}`);
+    console.error(
+      `[Audio Debug] S3 Bucket: ${audioBucket}${usingDefaultBucket ? " (default)" : ""}`
+    );
     
     // Check AWS credentials availability (without exposing them)
     console.error(`[Audio Debug] AWS credentials check:`, {
       hasAccessKeyId: !!process.env.AWS_ACCESS_KEY_ID,
       hasSecretAccessKey: !!process.env.AWS_SECRET_ACCESS_KEY,
-      hasBucket: !!process.env.AWS_S3_BUCKET,
+      hasBucket: !!audioBucket,
+      bucketSource: usingDefaultBucket ? "default" : "env",
       accessKeyLength: process.env.AWS_ACCESS_KEY_ID?.length || 0,
       secretKeyLength: process.env.AWS_SECRET_ACCESS_KEY?.length || 0
     });
@@ -210,7 +230,7 @@ export async function generateAudioFromScript(
       console.error(`[Audio Debug] Text length: ${scriptText.length} characters exceeds Polly limits`);
     } else if (error.name === "NoSuchBucket") {
       errorMessage = "S3 bucket not found";
-      console.error(`[Audio Debug] Bucket ${process.env.AWS_S3_BUCKET} does not exist or access denied`);
+      console.error(`[Audio Debug] Bucket ${audioBucket} does not exist or access denied`);
     } else if (error.name === "AccessDenied" || error.code === "AccessDenied") {
       errorMessage = "AWS permissions denied";
       console.error(`[Audio Debug] AWS credentials lack required permissions for Polly/S3 operations`);
@@ -297,13 +317,13 @@ export async function checkAudioExists(audioUrl: string): Promise<boolean> {
     const s3Key = urlParts.slice(bucketIndex + 1).join('/');
     
     console.log(`[AUDIO INVESTIGATION] S3 validation:`, {
-      bucket: process.env.AWS_S3_BUCKET,
+      bucket: audioBucket,
       s3Key,
       keyLength: s3Key.length
     });
     
     const getObjectCommand = new GetObjectCommand({
-      Bucket: process.env.AWS_S3_BUCKET,
+      Bucket: audioBucket,
       Key: s3Key
     });
     

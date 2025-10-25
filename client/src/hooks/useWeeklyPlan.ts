@@ -12,6 +12,10 @@ export interface WeeklyPlanTask {
   accent?: string;
   description?: string;
   contextType?: string;
+  conversationType?: string;
+  topicDomain?: string;
+  originalTitle?: string;
+  dayNumber?: number;
 }
 
 export interface WeeklyPlan {

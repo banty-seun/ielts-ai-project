@@ -50,7 +50,15 @@ export function TaskListWithProgress({
   const { toast } = useToast();
 
   // Create a helper to format task titles consistently
-  const formatTaskTitle = (title: string) => {
+  const formatTaskTitle = (task: WeeklyPlanTask) => {
+    const title = task.title;
+    const original = (task as any).originalTitle;
+    
+    // If backend already provided a refined title, use it directly
+    if (original && original !== title) {
+      return title;
+    }
+    
     // If title already contains a colon, assume it's properly formatted
     if (title.includes(':')) {
       return title;
@@ -91,7 +99,13 @@ export function TaskListWithProgress({
   const { getToken } = useFirebaseAuthContext();
 
   // Helper function to extract day number from the task.day property
-  const getDayNumber = (day: string): number => {
+  const getDayNumber = (task: WeeklyPlanTask): number => {
+    const explicit = (task as any).dayNumber;
+    if (typeof explicit === 'number' && !Number.isNaN(explicit)) {
+      return explicit;
+    }
+
+    const day = task.day ?? '';
     // Extract numbers from the day string (e.g., "Day 3" -> 3)
     const match = day.match(/\d+/);
     return match ? parseInt(match[0]) : 1; // Default to 1 if no number found
@@ -129,8 +143,8 @@ export function TaskListWithProgress({
       
       // Format tasks for batch initialization
       const tasksToInitialize = tasks.map(task => ({
-        taskTitle: task.title,
-        dayNumber: getDayNumber(task.day),
+        taskTitle: (task as any).originalTitle || task.title,
+        dayNumber: getDayNumber(task),
         weekNumber: weekNumber,
         skill: task.skill || 'listening', // Include skill type for content generation trigger
         initialStatus: 'not-started'
@@ -263,6 +277,7 @@ export function TaskListWithProgress({
   const navigateToPractice = async (task: WeeklyPlanTask, dayNumber: number) => {
     try {
       // Get task key and look up the progress ID
+      const dayNumber = getDayNumber(task);
       const taskKey = getTaskKey(task.title, dayNumber);
       const progressData = progressIdMap[taskKey];
       
@@ -457,7 +472,7 @@ export function TaskListWithProgress({
   return (
     <div className={cn("space-y-1", className)}>
       {tasks.map((task, index) => {
-        const dayNumber = getDayNumber(task.day);
+        const dayNumber = getDayNumber(task);
         const taskKey = getTaskKey(task.title, dayNumber);
         const progressData = progressIdMap[taskKey];
         
@@ -488,7 +503,7 @@ export function TaskListWithProgress({
 
               <div>
                 <div className="font-medium text-sm">
-                  {formatTaskTitle(task.title)}
+                  {formatTaskTitle(task)}
                 </div>
                 <div className="text-xs text-gray-500 flex items-center gap-1 mt-0.5">
                   <span>{task.day}</span>

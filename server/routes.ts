@@ -6,9 +6,31 @@ import { verifyFirebaseAuth, ensureFirebaseUser } from "./firebaseAuth";
 import { batchInitializeTaskProgress } from "./controllers/taskProgressController";
 import { getTaskProgressById } from "./controllers/getTaskProgressController";
 import { v4 as uuidv4 } from 'uuid';
-import { generateIELTSPlan, generateIELTSPlan_debugWrapper, generateListeningScriptForTask, generateQuestionsFromScript } from "./openai";
+import { generateIELTSPlan, generateIELTSPlan_debugWrapper, generateListeningScriptForTask, generateQuestionsFromScript, generateListeningSessionPackage, generateListeningStudyPlan } from "./openai";
 import { generateAudioFromScript, checkAudioExists } from "./audioService";
 import { registerRegenerateRoutes } from "./routes/regenerate";
+import { DEFAULT_SESSION_MINUTES, NEXT_MIN_MS } from "../shared/constants";
+import { makeListeningTaskTitle, needsTitleUpdate } from "./services/title";
+import { createFollowUpListeningTask } from "./services/taskFactory";
+import { minutesToLabel } from "./utils/time.ts";
+import { normalizeAccent } from "./utils/audio.ts";
+
+function normalizeListeningActivity(activity: any) {
+  const durationMinutes =
+    typeof activity.dayDurationMinutes === "number"
+      ? activity.dayDurationMinutes
+      : typeof activity.duration === "string"
+        ? parseInt(activity.duration.replace(/\D/g, ""), 10) || undefined
+        : undefined;
+
+  const resolvedMinutes = durationMinutes ?? 30;
+
+  return {
+    ...activity,
+    duration: minutesToLabel(resolvedMinutes),
+    durationMinutes: resolvedMinutes,
+  };
+}
 
 /**
  * Helper function to pre-generate scripts for listening tasks
@@ -30,7 +52,7 @@ async function preGenerateScriptsForListeningTasks(
       const taskForScript = {
         taskTitle: task.title,
         weekNumber: weekNumber,
-        accent: task.accent || "British",
+        accent: normalizeAccent(task.accent),
         progressData: { description: task.description }
       };
 
@@ -38,14 +60,29 @@ async function preGenerateScriptsForListeningTasks(
       const scriptResult = await generateListeningScriptForTask(taskForScript as any, userLevel, targetBand);
       
       if (scriptResult.success) {
-        console.log(`[Script Pre-Generation] Generated script for "${task.title}": ${scriptResult.scriptText?.split(' ').length} words`);
+        const generatedTitle = makeListeningTaskTitle({
+          scriptType: scriptResult.scriptType === 'dialogue' || scriptResult.scriptType === 'monologue'
+            ? scriptResult.scriptType
+            : undefined,
+          contextLabel: scriptResult.contextLabel,
+          topicDomain: scriptResult.topicDomain,
+          scenarioOverview: scriptResult.scenarioOverview
+        });
+
+        console.log(`[Script Pre-Generation] Generated script for "${task.title}" → "${generatedTitle}": ${scriptResult.scriptText?.split(' ').length} words`);
         return {
           taskTitle: task.title,
+          generatedTitle,
           scriptText: scriptResult.scriptText,
           accent: scriptResult.accent,
           scriptType: scriptResult.scriptType,
           difficulty: scriptResult.difficulty,
-          duration: scriptResult.estimatedDurationSec
+          duration: scriptResult.estimatedDurationSec,
+          topicDomain: scriptResult.topicDomain,
+          contextLabel: scriptResult.contextLabel,
+          scenarioOverview: scriptResult.scenarioOverview,
+          estimatedDurationSec: scriptResult.estimatedDurationSec,
+          ieltsPart: scriptResult.ieltsPart
         };
       } else {
         console.error(`[Script Pre-Generation] Failed to generate script for "${task.title}":`, scriptResult.error);
@@ -103,7 +140,7 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
       }
       
       // Get all task progress records for this weekly plan
-      const taskProgressRecords = await storage.getTaskProgressByWeeklyPlan(weeklyPlanId);
+      const taskProgressRecords = await storage.getTaskProgressByWeeklyPlan(weeklyPlanId, userId);
       
       console.log(`[Task Progress API] Found ${taskProgressRecords.length} task progress records for weekly plan ${weeklyPlanId}`);
       
@@ -348,7 +385,7 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
           data: {
             hasScript: true,
             scriptLength: task.scriptText.length,
-            accent: task.accent,
+            accent: normalizeAccent(task.accent ?? undefined),
             duration: task.duration
           }
         });
@@ -391,14 +428,13 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
         });
       }
       
-      // Import title builder
-      const { makeListeningTaskTitle, needsTitleUpdate } = require('./services/title');
-      
       // Generate dynamic title if needed
       let updatedTitle = task.taskTitle;
       if (needsTitleUpdate(task.taskTitle) && scriptResult.contextLabel) {
         updatedTitle = makeListeningTaskTitle({
-          scriptType: scriptResult.scriptType,
+          scriptType: scriptResult.scriptType === 'dialogue' || scriptResult.scriptType === 'monologue'
+            ? scriptResult.scriptType
+            : undefined,
           contextLabel: scriptResult.contextLabel,
           topicDomain: scriptResult.topicDomain,
           scenarioOverview: scriptResult.scenarioOverview
@@ -406,7 +442,7 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
         console.log(`[Script Generation API] Updated title from "${task.taskTitle}" to "${updatedTitle}"`);
       }
       
-      // Update the task with generated content and metadata (no taskTitle in updateTaskContent)
+      // Update the task with generated content, metadata, and refreshed title
       const updateData = {
         scriptText: scriptResult.scriptText!,
         accent: scriptResult.accent!,
@@ -417,7 +453,8 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
         topicDomain: scriptResult.topicDomain,
         contextLabel: scriptResult.contextLabel,
         scenarioOverview: scriptResult.scenarioOverview,
-        estimatedDurationSec: scriptResult.estimatedDurationSec
+        estimatedDurationSec: scriptResult.estimatedDurationSec,
+        taskTitle: updatedTitle
       };
       
       const updatedTask = await storage.updateTaskContent(taskId, updateData);
@@ -519,14 +556,14 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
               hasAudio: true,
               audioUrl: task.audioUrl,
               duration: task.duration,
-              accent: task.accent
+              accent: normalizeAccent(task.accent ?? undefined)
             }
           });
         }
       }
       
       // Use accent from task or default to British
-      const accent = task.accent || "British";
+      const accent = normalizeAccent(task.accent ?? undefined);
       
       console.log(`[Audio Generation API] Generating audio with accent: ${accent}`);
       console.log(`[AUDIO INVESTIGATION] Final script to be synthesized (${trimmedScript.length} chars):`, 
@@ -553,7 +590,7 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
       const updateData = {
         audioUrl: audioResult.audioUrl!,
         duration: audioResult.duration!,
-        accent: accent // Ensure accent is saved
+        accent
       };
       
       await storage.updateTaskContent(taskId, updateData);
@@ -585,7 +622,311 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
       });
     }
   });
-  
+
+  // Generate a listening session package (prefetch 4 audios + questions)
+  app.post('/api/listening/session-package', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    try {
+      const {
+        activityType,
+        scenario,
+        sessionDurationMinutes,
+        targetBand,
+        userLevel,
+        accent,
+      } = req.body ?? {};
+
+      if (activityType !== "dialogue" && activityType !== "monologue") {
+        return res.status(400).json({
+          success: false,
+          message: "activityType must be 'dialogue' or 'monologue'",
+        });
+      }
+
+      if (typeof scenario !== "string" || scenario.trim().length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "scenario is required",
+        });
+      }
+
+      const durationMinutes =
+        typeof sessionDurationMinutes === "number"
+          ? sessionDurationMinutes
+          : parseInt(String(sessionDurationMinutes), 10);
+      if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "sessionDurationMinutes must be a positive number",
+        });
+      }
+
+      const targetBandNum =
+        typeof targetBand === "number" ? targetBand : parseFloat(String(targetBand));
+      if (!Number.isFinite(targetBandNum)) {
+        return res.status(400).json({
+          success: false,
+          message: "targetBand must be a number",
+        });
+      }
+
+      const userLevelNum =
+        typeof userLevel === "number" ? userLevel : parseFloat(String(userLevel));
+      if (!Number.isFinite(userLevelNum)) {
+        return res.status(400).json({
+          success: false,
+          message: "userLevel must be a number",
+        });
+      }
+
+      const normalizedAccent = typeof accent === "string" ? normalizeAccent(accent) : undefined;
+
+      console.log("[Session Package API] Generating package", {
+        userId: req.user?.id,
+        activityType,
+        scenario,
+        sessionDurationMinutes: durationMinutes,
+        targetBand: targetBandNum,
+        userLevel: userLevelNum,
+        accent: normalizedAccent,
+      });
+
+      const packageData = await generateListeningSessionPackage({
+        activityType,
+        scenario,
+        sessionDurationMinutes: durationMinutes,
+        targetBand: targetBandNum,
+        userLevel: userLevelNum,
+        accent: normalizedAccent,
+      });
+
+      return res.status(200).json({
+        success: true,
+        data: packageData,
+      });
+    } catch (error: any) {
+      console.error('[Session Package API] Error generating session package:', error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to generate listening session package",
+        error: error?.message ?? 'Unknown error'
+      });
+    }
+  });
+
+  // Generate or refresh a listening weekly plan for the given week
+  app.post('/api/firebase/weekly-plan/generate-listening', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    try {
+      const userId = req.user.id;
+      const rawWeekNumber = req.body?.weekNumber;
+      const weekNumber = Number.isInteger(rawWeekNumber)
+        ? rawWeekNumber
+        : Number.isFinite(Number(rawWeekNumber))
+          ? Number(rawWeekNumber)
+          : 1;
+
+      if (!Number.isFinite(weekNumber) || weekNumber < 1) {
+        return res.status(400).json({
+          success: false,
+          message: "weekNumber must be a positive integer"
+        });
+      }
+
+      const studyPlans = await storage.getStudyPlansByUserId(userId);
+      if (!studyPlans.length) {
+        return res.status(400).json({
+          success: false,
+          message: "No study plan found. Complete onboarding first."
+        });
+      }
+
+      const latestPlan = studyPlans[studyPlans.length - 1];
+      const skillRatings = (latestPlan.skillRatings as Record<string, number>) ?? {};
+      const storedPreferences = (latestPlan.studyPreferences as any) ?? {};
+
+      const planRequest = {
+        fullName: latestPlan.fullName,
+        phoneNumber: latestPlan.phoneNumber ?? undefined,
+        targetBandScore: Number(latestPlan.targetBandScore) || 7,
+        testDate: latestPlan.testDate ?? null,
+        notDecided: latestPlan.notDecided === 'true',
+        skillRatings: {
+          listening: Number(skillRatings.listening ?? 1),
+          reading: Number(skillRatings.reading ?? 1),
+          writing: Number(skillRatings.writing ?? 1),
+          speaking: Number(skillRatings.speaking ?? 1),
+        },
+        immigrationGoal: latestPlan.immigrationGoal,
+        studyPreferences: {
+          dailyCommitment: storedPreferences.dailyCommitment ?? '1hour',
+          schedule: storedPreferences.schedule ?? 'weekday',
+          style: storedPreferences.style ?? 'ai-guided',
+          sessionMinutes: storedPreferences.sessionMinutes ?? DEFAULT_SESSION_MINUTES,
+        },
+        weekNumber,
+      };
+
+      const listeningPlan = await generateListeningStudyPlan(planRequest as any);
+      if ((listeningPlan as any)?.success === false) {
+        return res.status(500).json({
+          success: false,
+          message: "Failed to generate listening weekly plan",
+          reason: (listeningPlan as any).reason ?? 'unknown'
+        });
+      }
+
+      const weekFocus = (listeningPlan as any).weekFocus || `Listening focus for week ${weekNumber}`;
+      const planEntries = Array.isArray((listeningPlan as any).plan) ? (listeningPlan as any).plan : [];
+      const sessionMinutes = planRequest.studyPreferences.sessionMinutes ?? DEFAULT_SESSION_MINUTES;
+
+      const formattedEntries = planEntries.map((entry: any, index: number) => {
+        const dayNumber =
+          typeof entry.day === 'string' && /\d+/.test(entry.day)
+            ? Number(/\d+/.exec(entry.day)?.[0])
+            : index + 1;
+
+        const scriptType =
+          entry.activityType === 'monologue' ? 'monologue' :
+          entry.activityType === 'dialogue' ? 'dialogue' :
+          'dialogue';
+
+        const contextLabel = entry.conversationType ?? entry.scenario ?? 'Listening Practice';
+        const topicDomain = entry.scenario ?? entry.conversationType ?? 'Listening Practice';
+        const scenarioOverview = entry.description ?? `${contextLabel} listening task`;
+        const normalizedAccent = normalizeAccent(entry.accent);
+        const estimatedDurationSec = entry.dayDurationMinutes
+          ? Math.round(entry.dayDurationMinutes * 60)
+          : Math.round(sessionMinutes * 60);
+        const durationLabel = entry.dayDurationMinutes
+          ? `${entry.dayDurationMinutes} min`
+          : `${sessionMinutes} min`;
+
+        const taskTitle = makeListeningTaskTitle({
+          scriptType,
+          contextLabel,
+          topicDomain,
+          scenarioOverview,
+        });
+
+        return {
+          dayNumber,
+          taskTitle,
+          scriptType,
+          contextLabel,
+          topicDomain,
+          scenarioOverview,
+          accent: normalizedAccent,
+          estimatedDurationSec,
+          durationLabel,
+          description: scenarioOverview,
+          conversationType: entry.conversationType ?? null,
+        };
+      });
+
+      const planData = {
+        weekFocus,
+        plan: formattedEntries.map((entry: any) => ({
+          originalTitle: entry.taskTitle,
+          title: entry.taskTitle,
+          day: `Day ${entry.dayNumber}`,
+          duration: entry.durationLabel,
+          status: 'not-started',
+          skill: 'listening',
+          accent: entry.accent,
+          description: entry.description,
+          contextType: entry.scriptType,
+          conversationType: entry.conversationType,
+          topicDomain: entry.topicDomain,
+          dayNumber: entry.dayNumber,
+        })),
+      };
+
+      const weeklyPlan = await storage.createOrUpdateWeeklyStudyPlan(
+        userId,
+        weekNumber,
+        'listening',
+        weekFocus,
+        planData,
+      );
+
+      const existingTasks = await storage.getTaskProgressByWeeklyPlan(weeklyPlan.id, userId);
+      const usedTaskIds = new Set<string>();
+
+      let updatedCount = 0;
+      let createdCount = 0;
+
+      for (const entry of formattedEntries) {
+        const candidate = existingTasks.find(
+          (task) => task.dayNumber === entry.dayNumber && !usedTaskIds.has(task.id),
+        );
+
+        if (candidate) {
+          usedTaskIds.add(candidate.id);
+          await storage.updateTaskContent(candidate.id, {
+            taskTitle: entry.taskTitle,
+            accent: entry.accent,
+            scriptType: entry.scriptType,
+            topicDomain: entry.topicDomain,
+            contextLabel: entry.contextLabel,
+            scenarioOverview: entry.scenarioOverview,
+            estimatedDurationSec: entry.estimatedDurationSec,
+            duration: entry.estimatedDurationSec,
+            replayLimit: 3,
+          });
+          await storage.updateTaskStatus(candidate.id, 'not-started', null);
+          updatedCount += 1;
+        } else {
+          const insertData = {
+            id: uuidv4(),
+            userId,
+            weeklyPlanId: weeklyPlan.id,
+            weekNumber,
+            dayNumber: entry.dayNumber,
+            taskTitle: entry.taskTitle,
+            skill: 'listening' as const,
+            status: 'not-started' as const,
+            progressData: null,
+            startedAt: null,
+            completedAt: null,
+            accent: entry.accent,
+            replayLimit: 3,
+            scriptType: entry.scriptType,
+            difficulty: null,
+            topicDomain: entry.topicDomain,
+            contextLabel: entry.contextLabel,
+            scenarioOverview: entry.scenarioOverview,
+            estimatedDurationSec: entry.estimatedDurationSec,
+            duration: entry.estimatedDurationSec,
+          };
+
+          await storage.createTaskProgress(insertData);
+          createdCount += 1;
+        }
+      }
+
+      const staleTasks = existingTasks.filter((task) => !usedTaskIds.has(task.id));
+      if (staleTasks.length > 0) {
+        await storage.deleteTaskProgressByIds(staleTasks.map((task) => task.id));
+      }
+
+      return res.status(200).json({
+        success: true,
+        weeklyPlanId: weeklyPlan.id,
+        weekNumber,
+        weekFocus,
+        tasksCreated: createdCount,
+        tasksUpdated: updatedCount,
+        tasksDeleted: staleTasks.length,
+      });
+    } catch (error: any) {
+      console.error('[Weekly Plan API] Error generating listening plan:', error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to generate listening weekly plan",
+        error: error?.message ?? 'Unknown error',
+      });
+    }
+  });
+
   // =====================================================================
   // Plan Generation Endpoints
   // =====================================================================
@@ -704,17 +1045,45 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
                           ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"][day.day - 1] ||
                           `Day ${day.day}`;
 
-                        skillActivities[skill].push({
-                          title: activity.title,
+                        const normalizedActivity =
+                          skill === "listening" ? normalizeListeningActivity(activity) : activity;
+
+                        const durationLabel =
+                          typeof normalizedActivity.duration === "string"
+                            ? normalizedActivity.duration
+                            : typeof activity.duration === "string"
+                              ? activity.duration
+                              : "30 min";
+
+                        const durationMinutes =
+                          skill === "listening" && typeof normalizedActivity.durationMinutes === "number"
+                            ? normalizedActivity.durationMinutes
+                            : undefined;
+
+                        const accentCandidate =
+                          typeof normalizedActivity.accent === "string" && normalizedActivity.accent.length > 0
+                            ? normalizedActivity.accent
+                            : typeof activity.accent === "string" && activity.accent.length > 0
+                              ? activity.accent
+                              : undefined;
+
+                        const baseActivity = {
+                          title: normalizedActivity.title || activity.title,
                           day: dayName,
-                          duration: activity.duration || "30 min",
+                          duration: durationLabel,
                           status: "not-started",
                           skill,
-                          accent: "British",
-                          description: activity.description,
-                          contextType: "general",
-                          resources: activity.resources,
-                        });
+                          accent: normalizeAccent(accentCandidate),
+                          description: normalizedActivity.description || activity.description,
+                          contextType: normalizedActivity.contextType || "general",
+                          resources: normalizedActivity.resources || activity.resources,
+                        } as any;
+
+                        if (durationMinutes !== undefined) {
+                          baseActivity.durationMinutes = durationMinutes;
+                        }
+
+                        skillActivities[skill].push(baseActivity);
                       }
                     }
                   }
@@ -759,8 +1128,44 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
                   );
 
                   if (generatedScripts.length > 0) {
+                    const planWithGeneratedMetadata = Array.isArray(planData.plan)
+                      ? planData.plan.map((task: any) => {
+                          const sourceTitle = task.originalTitle || task.title;
+                          const script = generatedScripts.find((s: any) => s.taskTitle === sourceTitle);
+                          if (!script) {
+                            return task;
+                          }
+
+                          const nextTitle = script.generatedTitle || task.title;
+                          const estimatedMinutes =
+                            typeof script.estimatedDurationSec === 'number'
+                              ? Math.max(1, Math.round(script.estimatedDurationSec / 60))
+                              : task.durationMinutes || task.duration;
+
+                          return {
+                            ...task,
+                            originalTitle: sourceTitle,
+                            title: nextTitle,
+                            accent: script.accent || task.accent,
+                            contextType: script.scriptType || task.contextType,
+                            description: script.scenarioOverview || task.description,
+                            topicDomain: script.topicDomain || task.topicDomain,
+                            contextLabel: script.contextLabel || task.contextLabel,
+                            durationMinutes:
+                              typeof estimatedMinutes === 'number'
+                                ? estimatedMinutes
+                                : task.durationMinutes,
+                            duration:
+                              typeof estimatedMinutes === 'number'
+                                ? `${estimatedMinutes} min`
+                                : task.duration,
+                          };
+                        })
+                      : planData.plan;
+
                     const updatedPlanData = {
                       ...planData,
+                      plan: planWithGeneratedMetadata,
                       preGeneratedScripts: generatedScripts,
                     };
 
@@ -937,7 +1342,6 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
       
       // Get the latest study plan to include preferences
       let preferences: any = {};
-      const { DEFAULT_SESSION_MINUTES } = require('../shared/constants');
       
       try {
         const studyPlans = await storage.getStudyPlansByUserId(userId);
@@ -1064,14 +1468,13 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
           );
           
           if (scriptResult && scriptResult.success && scriptResult.scriptText && scriptResult.scriptText.trim().length > 0) {
-            // Import title builder
-            const { makeListeningTaskTitle, needsTitleUpdate } = require('./services/title');
-            
             // Generate dynamic title if needed
             let updatedTitle = taskWithContent.taskTitle;
             if (needsTitleUpdate(taskWithContent.taskTitle) && scriptResult.contextLabel) {
               updatedTitle = makeListeningTaskTitle({
-                scriptType: scriptResult.scriptType,
+                scriptType: scriptResult.scriptType === 'dialogue' || scriptResult.scriptType === 'monologue'
+                  ? scriptResult.scriptType
+                  : undefined,
                 contextLabel: scriptResult.contextLabel,
                 topicDomain: scriptResult.topicDomain,
                 scenarioOverview: scriptResult.scenarioOverview
@@ -1089,7 +1492,8 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
               topicDomain: scriptResult.topicDomain,
               contextLabel: scriptResult.contextLabel,
               scenarioOverview: scriptResult.scenarioOverview,
-              estimatedDurationSec: scriptResult.estimatedDurationSec
+              estimatedDurationSec: scriptResult.estimatedDurationSec,
+              taskTitle: updatedTitle
             });
             
             // Update the task object with new metadata (but not scriptText for API response)
@@ -1424,9 +1828,6 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
       const userId = req.user.id;
       const { progressId, taskId, remainingMs } = req.body;
       
-      // Import constants
-      const { NEXT_MIN_MS } = require('../shared/constants');
-      
       // Validate remaining time
       if (remainingMs < NEXT_MIN_MS) {
         console.log('[NEXT][server]', { userId, fromProgressId: progressId, remainingMs, ok: false, reason: 'time_exhausted' });
@@ -1446,7 +1847,6 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
       }
       
       // Create follow-up task
-      const { createFollowUpListeningTask } = require('./services/taskFactory');
       const result = await createFollowUpListeningTask({
         userId,
         from: { progressId, taskId }
@@ -1478,6 +1878,15 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
           const scriptResult = await generateListeningScriptForTask(newTask, userLevel, targetBand);
           
           if (scriptResult.success && scriptResult.scriptText) {
+            const followUpTitle = makeListeningTaskTitle({
+              scriptType: scriptResult.scriptType === 'dialogue' || scriptResult.scriptType === 'monologue'
+                ? scriptResult.scriptType
+                : undefined,
+              contextLabel: scriptResult.contextLabel,
+              topicDomain: scriptResult.topicDomain,
+              scenarioOverview: scriptResult.scenarioOverview
+            });
+
             await storage.updateTaskContent(result.progressId, {
               scriptText: scriptResult.scriptText,
               accent: scriptResult.accent!,
@@ -1488,8 +1897,10 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
               topicDomain: scriptResult.topicDomain,
               contextLabel: scriptResult.contextLabel,
               scenarioOverview: scriptResult.scenarioOverview,
-              estimatedDurationSec: scriptResult.estimatedDurationSec
+              estimatedDurationSec: scriptResult.estimatedDurationSec,
+              taskTitle: followUpTitle
             });
+            newTask.taskTitle = followUpTitle;
             
             // Stage 2: Generate questions
             console.log('[NEXT][pipeline] Starting question generation');

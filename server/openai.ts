@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { onboardingSchema, type TaskProgress, type Question, type QuestionOption } from "@shared/schema";
+import { normalizeAccent } from "./utils/audio.ts";
 import type { z } from "zod";
 
 // Debug types for investigation
@@ -546,17 +547,17 @@ export async function generateQuestionsFromScript(
     }
 
     // Create the system prompt for IELTS question generation
-    const systemPrompt = `You are an expert IELTS Listening tutor. Generate 4-5 multiple-choice questions based on the provided listening script.
+    const systemPrompt = `You are an expert IELTS Listening tutor. Generate exactly 10 multiple-choice questions based on the provided listening script.
 
 Requirements:
-- Questions should test listening comprehension skills appropriate for IELTS
-- Include questions about main ideas, specific details, inferences, and vocabulary in context
+- Test main ideas, specific details, inference, speaker attitude, and vocabulary-in-context
+- Exactly 10 questions
 - Each question must have exactly 4 options (A, B, C, D)
-- Include realistic distractors that test careful listening
-- Provide clear explanations for the correct answers
-- Questions should be appropriate for ${difficulty} level
+- Include realistic distractors
+- Provide the correct answer key and a clear explanation for each
+- Difficulty appropriate for ${difficulty}
 
-Please respond with a JSON object in this exact format:
+Respond with JSON only in this exact format:
 {
   "questions": [
     {
@@ -568,15 +569,14 @@ Please respond with a JSON object in this exact format:
     }
   ]
 }
-
-Only return the JSON object — no additional explanation.`;
+No extra text.`;
 
     const userPrompt = `Task: ${taskTitle}
 
 Script text:
 ${scriptText}
 
-Generate 4-5 IELTS listening comprehension questions based on this script.`;
+Generate exactly 10 IELTS listening comprehension questions for this script. Each question must be multiple-choice with four options labelled A, B, C, and D, and include the answer key plus explanation.`;
 
     verboseLog(`[Question Generation] Generating questions for "${taskTitle}":`, {
       scriptLength: scriptText.length,
@@ -766,28 +766,31 @@ This is Week ${weekNumber} of the user's preparation journey. Your plan must pri
 - Everyday social contexts (e.g., conversations like office dialogues, service calls)
 - Monologues (e.g., announcements, recorded guides)
 - Educational settings (e.g., classroom conversations, academic lectures)
-- Emphasize exposure to diverse accents including: British, Canadian, Australian, New Zealand, and North American.
+- Emphasize exposure to diverse accents including: British, Canadian, Australian, American, and NewZealand.
 
 ✅ Each day should contain 1 Listening task with:
 - A scenario (e.g., "Office Dialogue", "University Lecture", "Airport Announcement")
 - A conversationType (e.g., "Job Interview", "Study Abroad Seminar", "Flight Information")
+- ⚡ activityType: "dialogue" or "monologue" (use IELTS conventions; Part 1 & 3 are dialogues, Part 2 & 4 are monologues)
+- ⚡ dayDurationMinutes: the exact number of minutes the user committed for that day based on onboarding (weekday/weekend rules)
 - A concise description
-- An estimated duration (based on the user's daily study commitment)
 - The accent being focused on
 
 Format your response as a JSON array of 5 items, one for each day. Each item must include:
 {
   "scenario": "Location/Setting",
   "conversationType": "Specific conversation type",
+  "activityType": "dialogue | monologue",
   "description": "Brief task description",
-  "duration": "time estimate",
-  "accent": "accent type"
+  "dayDurationMinutes": number,
+  "accent": "British | Canadian | Australian | American | NewZealand"
 }
 
-Do not include any extra explanations or summaries outside the plan itself.
-Focus on helping the learner build familiarity with question types, improve selective listening, and handle different accents confidently. You may occasionally include short strategy tips in the task description.
-This plan will be shown in a dashboard UI, so make sure the task names and descriptions are concise, readable, and focused on clarity.
-Do not include Reading, Writing, or Speaking practice — this prompt is only for the Listening module.`;
+Rules:
+- Respect availability: Only schedule on available days; durations must match the user's onboarding selection for weekday/weekend.
+- Keep titles concise. UI will display as "Type: Scenario" (e.g., "Monologue: University Lecture").
+- No Reading, Writing, or Speaking practice in this prompt.
+- JSON only. No extra text.`;
 
     // Log the prompt for debugging
     verboseLog("OpenAI Prompt Details:");
@@ -1003,7 +1006,7 @@ Do not include Reading, Writing, or Speaking practice — this prompt is only fo
             "Canadian",
             "Australian",
             "American",
-            "New Zealand",
+            "NewZealand",
           ];
 
           planArray = weekdays.map((day, index) => ({
@@ -1093,8 +1096,256 @@ Return JSON ONLY in this exact shape:
   "estimatedDurationSec": number,
   "ieltsPart": 1 | 2 | 3 | 4
 }
+
+Rules:
+- The scriptType MUST match the provided activityType for this session.
+- The topicDomain/context should reflect the provided scenario.
+- Map IELTS parts appropriately (1 & 3 = dialogues; 2 & 4 = monologues).
+- Target spoken length 90–180 seconds (approx. 1–3 minutes).
+
 No commentary. JSON only.
 `;
+
+export const LISTENING_SESSION_PACKAGE_SYSTEM = `
+You are an IELTS Listening tutor. Generate a package of listening practice items for a single session.
+
+Goal:
+- Produce a batch of audios (prefetchCount = 4) that all match the same activityType and scenario.
+- Each audio must include: a realistic script JSON (per IELTS script schema) and a 10-question MCQ set with answers.
+
+Inputs (provided in user message):
+- activityType: "dialogue" | "monologue"
+- scenario: short label ("University Lecture", "Office Dialogue", etc.)
+- sessionDurationMinutes: integer (total time available for this session)
+- targetBand: integer (goal)
+- userLevel: integer (current)
+- accent: "British" | "Canadian" | "Australian" | "American" | "NewZealand" (optional; choose if not provided)
+
+Constraints:
+- All audios in this package must use the SAME activityType and scenario family (topics vary but stay within the scenario/domain).
+- Preferred per-audio spoken duration: 90–180 seconds. Vary lengths slightly to feel natural.
+- Total estimated audio time should stay within sessionDurationMinutes minus a small buffer (~2 minutes) for reading questions.
+- Each audio MUST have exactly 10 MCQs (A–D) with correctAnswer and explanation.
+
+Return JSON only in this exact shape:
+{
+  "session": {
+    "title": "Type: Scenario",
+    "activityType": "dialogue" | "monologue",
+    "scenario": "short label",
+    "sessionDurationMinutes": number,
+    "estimatedTotalAudioSec": number
+  },
+  "audios": [
+    {
+      "index": 1,
+      "script": {
+        "script": "Full script text",
+        "scriptType": "dialogue" | "monologue",
+        "topicDomain": "e.g., 'Classroom' | 'Office' | 'Service Call'",
+        "contextLabel": "short title",
+        "scenarioOverview": "1–2 sentence summary",
+        "accent": "British" | "American" | "Canadian" | "Australian" | "NewZealand",
+        "estimatedDurationSec": number,
+        "ieltsPart": 1 | 2 | 3 | 4
+      },
+      "questions": [
+        {
+          "id": "q1",
+          "question": "…",
+          "options": ["A", "B", "C", "D"],
+          "correctAnswer": "A",
+          "explanation": "…"
+        }
+      ]
+    }
+  ]
+}
+No commentary. JSON only.
+`;
+
+export const buildSessionPackageUserPrompt = ({
+  activityType,
+  scenario,
+  sessionDurationMinutes,
+  targetBand,
+  userLevel,
+  accent,
+}: {
+  activityType: "dialogue" | "monologue";
+  scenario: string;
+  sessionDurationMinutes: number;
+  targetBand: number;
+  userLevel: number;
+  accent?: string;
+}) => `
+Create a listening session package with prefetchCount=4.
+
+Inputs:
+- activityType: ${activityType}
+- scenario: ${scenario}
+- sessionDurationMinutes: ${sessionDurationMinutes}
+- targetBand: ${targetBand}
+- userLevel: ${userLevel}
+- accent: ${accent ?? "auto-select"}
+
+Requirements:
+- SAME activityType and scenario across all audios
+- Each audio: 90–180 sec script + exactly 10 MCQs (A–D) with answers and explanations
+- Keep cumulative estimated audio time within sessionDurationMinutes - 2 minutes
+- JSON only per system schema
+`;
+
+export interface ListeningSessionPackageParams {
+  activityType: "dialogue" | "monologue";
+  scenario: string;
+  sessionDurationMinutes: number;
+  targetBand: number;
+  userLevel: number;
+  accent?: string;
+}
+
+export interface ListeningSessionPackageQuestion {
+  id: string;
+  question: string;
+  options: string[];
+  correctAnswer: string;
+  explanation: string;
+}
+
+export interface ListeningSessionPackageAudio {
+  index: number;
+  script: {
+    script: string;
+    scriptType: "dialogue" | "monologue";
+    topicDomain?: string;
+    contextLabel?: string;
+    scenarioOverview?: string;
+    accent: "British" | "Canadian" | "Australian" | "American" | "NewZealand";
+    estimatedDurationSec?: number;
+    ieltsPart?: 1 | 2 | 3 | 4;
+  };
+  questions: ListeningSessionPackageQuestion[];
+}
+
+export interface ListeningSessionPackage {
+  session: {
+    title: string;
+    activityType: "dialogue" | "monologue";
+    scenario: string;
+    sessionDurationMinutes: number;
+    estimatedTotalAudioSec: number;
+    accent: "British" | "Canadian" | "Australian" | "American" | "NewZealand";
+  };
+  audios: ListeningSessionPackageAudio[];
+}
+
+const ensureArray = <T>(value: any, fallback: T[]): T[] => (Array.isArray(value) ? value : fallback);
+
+export async function generateListeningSessionPackage(
+  params: ListeningSessionPackageParams,
+): Promise<ListeningSessionPackage> {
+  const normalizedAccent = params.accent ? normalizeAccent(params.accent) : undefined;
+
+  const systemPrompt = LISTENING_SESSION_PACKAGE_SYSTEM;
+  const userPrompt = buildSessionPackageUserPrompt({
+    ...params,
+    accent: normalizedAccent,
+  });
+
+  const response = await openai.chat.completions.create({
+    model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ],
+    temperature: 0.3,
+    max_tokens: 6000,
+    response_format: { type: "json_object" },
+  });
+
+  const content = response.choices[0]?.message?.content?.trim();
+
+  if (!content) {
+    throw new Error("OpenAI returned empty session package response");
+  }
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(content);
+  } catch (error) {
+    console.error("[Session Package] Failed to parse JSON response", { content });
+    throw new Error("Failed to parse session package response");
+  }
+
+  const activityType = params.activityType;
+  const scenario = params.scenario.trim();
+  const sessionDurationMinutes = params.sessionDurationMinutes;
+  const accent = normalizedAccent ?? normalizeAccent(parsed?.session?.accent);
+
+  const title = `${activityType.charAt(0).toUpperCase()}${activityType.slice(1)}: ${scenario}`;
+
+  const audiosRaw = ensureArray(parsed?.audios, []).slice(0, 4);
+
+  const audios: ListeningSessionPackageAudio[] = audiosRaw.map((audio: any, idx: number) => {
+    const script = audio?.script ?? {};
+    const scriptAccent = normalizeAccent(script?.accent ?? accent);
+    const scriptType =
+      activityType === "dialogue" ? ("dialogue" as const) : ("monologue" as const);
+
+    const questionsRaw = ensureArray(audio?.questions, []).slice(0, 10);
+    const questions: ListeningSessionPackageQuestion[] = questionsRaw
+      .map((q: any, qIdx: number) => ({
+        id: typeof q?.id === "string" ? q.id : `q${qIdx + 1}`,
+        question: typeof q?.question === "string" ? q.question : "",
+        options: ensureArray(q?.options, []).slice(0, 4).map((opt: any) => String(opt)),
+        correctAnswer: typeof q?.correctAnswer === "string" ? q.correctAnswer : "",
+        explanation: typeof q?.explanation === "string" ? q.explanation : "",
+      }))
+      .filter((q) => q.question.trim().length > 0);
+
+    const estimatedSec =
+      typeof script?.estimatedDurationSec === "number"
+        ? script.estimatedDurationSec
+        : undefined;
+
+    return {
+      index: typeof audio?.index === "number" ? audio.index : idx + 1,
+      script: {
+        script: String(script?.script ?? ""),
+        scriptType: script?.scriptType === "monologue" ? "monologue" : scriptType,
+        topicDomain: typeof script?.topicDomain === "string" ? script.topicDomain : undefined,
+        contextLabel: typeof script?.contextLabel === "string" ? script.contextLabel : undefined,
+        scenarioOverview:
+          typeof script?.scenarioOverview === "string" ? script.scenarioOverview : undefined,
+        accent: scriptAccent,
+        estimatedDurationSec: estimatedSec,
+        ieltsPart:
+          script?.ieltsPart === 1 || script?.ieltsPart === 2 || script?.ieltsPart === 3 || script?.ieltsPart === 4
+            ? script.ieltsPart
+            : undefined,
+      },
+      questions,
+    };
+  });
+
+  const estimatedTotalAudioSec = audios.reduce((total, audio) => {
+    const duration = audio.script.estimatedDurationSec;
+    return total + (typeof duration === "number" ? duration : 0);
+  }, 0);
+
+  return {
+    session: {
+      title,
+      activityType,
+      scenario,
+      sessionDurationMinutes,
+      estimatedTotalAudioSec,
+      accent,
+    },
+    audios,
+  };
+}
 
 export async function generateListeningScriptForTask(
   task: TaskProgress,
@@ -1122,20 +1373,64 @@ export async function generateListeningScriptForTask(
       };
     }
 
+    const progressMeta = (task.progressData ?? {}) as Record<string, any>;
+    const progressActivityType =
+      typeof progressMeta.activityType === "string"
+        ? progressMeta.activityType.toLowerCase()
+        : undefined;
+    const scriptTypeNormalized =
+      typeof task.scriptType === "string"
+        ? task.scriptType.toLowerCase()
+        : undefined;
+
+    const activityType =
+      progressActivityType === "dialogue" || progressActivityType === "monologue"
+        ? progressActivityType
+        : scriptTypeNormalized === "monologue"
+          ? "monologue"
+          : "dialogue";
+
+    const scenarioCandidate =
+      typeof progressMeta.scenario === "string" && progressMeta.scenario.trim().length > 0
+        ? progressMeta.scenario
+        : typeof task.contextLabel === "string" && task.contextLabel.trim().length > 0
+          ? task.contextLabel
+          : typeof task.topicDomain === "string" && task.topicDomain.trim().length > 0
+            ? task.topicDomain
+            : task.taskTitle ?? "Listening Practice";
+    const scenario = scenarioCandidate;
+
+    const accentRaw =
+      typeof task.accent === "string" && task.accent.trim().length > 0
+        ? task.accent
+        : typeof progressMeta.accent === "string" && progressMeta.accent.trim().length > 0
+          ? progressMeta.accent
+          : "British";
+    const accent = normalizeAccent(accentRaw);
+
     // Create user prompt with task details
-    const userPrompt = `Create an IELTS listening script for: "${task.taskTitle}". 
-    
+    const userPrompt = `Create an IELTS listening script for: "${task.taskTitle}".
+
+Inputs:
+- activityType: ${activityType}  // "dialogue" | "monologue"
+- scenario: ${scenario}          // short label, e.g. "University Lecture", "Customer Support Call"
+- targetBand: ${targetBand}      // learner goal
+- userLevel: ${userLevel}        // current self-assessed level
+- accent: ${accent}              // optional; can be set by plan if provided
+
 Requirements:
-- Pick ONE IELTS Listening Part format (1-4)
-- Pick ONE topic domain aligned with IELTS topics
-- Language level should be appropriate for Band ${targetBand} learners (current level Band ${userLevel})
-- Target duration 1–3 minutes when spoken aloud
-- You MUST choose a valid IELTS part and a topic domain per the system instructions and return the JSON only.`;
+- Pick ONE IELTS Listening Part format consistent with activityType (1 or 3 for dialogue; 2 or 4 for monologue)
+- Topic domain must align with the scenario
+- Language level appropriate for Band ${targetBand} learners (current level Band ${userLevel})
+- Target spoken duration 1–3 minutes
+- Return JSON only per the system schema`;
 
     verboseLog(`[Script Generation] Generating IELTS script for "${task.taskTitle}":`, {
       userLevel,
       targetBand,
-      weekNumber: task.weekNumber
+      weekNumber: task.weekNumber,
+      activityType,
+      scenario
     });
 
     // Generate the script using GPT-4o Mini
