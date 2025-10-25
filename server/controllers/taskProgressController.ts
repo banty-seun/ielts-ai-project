@@ -33,7 +33,23 @@ export const batchInitializeTaskProgress = async (req: any, res: Response) => {
     
     // Get weekly plan to check for pre-generated scripts
     const weeklyPlan = await storage.getWeeklyStudyPlan(weeklyPlanId);
-    const preGeneratedScripts = (weeklyPlan?.planData as any)?.preGeneratedScripts || [];
+
+    if (!weeklyPlan) {
+      return res.status(404).json({
+        success: false,
+        message: "Weekly plan not found. Cannot initialize task progress without a valid plan."
+      });
+    }
+
+    if (weeklyPlan.userId !== userId) {
+      console.warn(`[Task Progress API] User ${userId} attempted to initialize tasks for plan ${weeklyPlanId} owned by ${weeklyPlan.userId}`);
+      return res.status(403).json({
+        success: false,
+        message: "You don't have permission to initialize tasks for this weekly plan"
+      });
+    }
+
+    const preGeneratedScripts = (weeklyPlan.planData as any)?.preGeneratedScripts || [];
     
     // Batch initialize task progress records
     const results = await storage.batchInitializeTaskProgress(
@@ -59,11 +75,19 @@ export const batchInitializeTaskProgress = async (req: any, res: Response) => {
               accent: matchingScript.accent,
               scriptType: matchingScript.scriptType,
               difficulty: matchingScript.difficulty,
-              duration: matchingScript.duration
+              duration: matchingScript.duration,
+              topicDomain: matchingScript.topicDomain,
+              contextLabel: matchingScript.contextLabel,
+              scenarioOverview: matchingScript.scenarioOverview,
+              estimatedDurationSec: matchingScript.estimatedDurationSec,
+              taskTitle: matchingScript.generatedTitle || task.taskTitle
             });
             
             await storage.updateTaskStatus(task.id, "script-ready");
-            console.log(`[Task Progress API] Applied pre-generated script to "${task.taskTitle}"`);
+            task.taskTitle = matchingScript.generatedTitle || task.taskTitle;
+            task.accent = matchingScript.accent ?? task.accent;
+            task.scriptType = matchingScript.scriptType ?? task.scriptType;
+            console.log(`[Task Progress API] Applied pre-generated script to "${matchingScript.generatedTitle || task.taskTitle}"`);
           } catch (error) {
             console.error(`[Task Progress API] Error applying script to "${task.taskTitle}":`, error);
           }

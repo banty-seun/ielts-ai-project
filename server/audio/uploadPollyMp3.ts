@@ -1,7 +1,13 @@
 import { S3Client, PutObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
 
-const AUDIO_BUCKET = "ielts-ai-audio";
-const AUDIO_REGION = "eu-west-2";
+const DEFAULT_AUDIO_BUCKET = "ielts-ai-audio";
+const DEFAULT_AUDIO_REGION = "eu-west-2";
+
+const resolvedBucket = process.env.AWS_S3_BUCKET?.trim();
+const resolvedRegion = process.env.AWS_REGION?.trim();
+
+const AUDIO_BUCKET = resolvedBucket && resolvedBucket.length > 0 ? resolvedBucket : DEFAULT_AUDIO_BUCKET;
+const AUDIO_REGION = resolvedRegion && resolvedRegion.length > 0 ? resolvedRegion : DEFAULT_AUDIO_REGION;
 
 const s3 = new S3Client({ region: AUDIO_REGION });
 

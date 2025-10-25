@@ -18,7 +18,7 @@ import {
   type InsertTaskAttempt,
 } from "@shared/schema";
 import { db, schema } from "./db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { sql } from "drizzle-orm/sql";
 import { v4 as uuid } from "uuid";
@@ -52,7 +52,7 @@ export interface IStorage {
   createTaskProgress(taskProgressData: InsertTaskProgress): Promise<TaskProgress>;
   getTaskProgress(id: string): Promise<TaskProgress | undefined>;
   getTaskProgressByUserAndTask(userId: string, weekNumber: number, dayNumber: number): Promise<TaskProgress | undefined>;
-  getTaskProgressByWeeklyPlan(weeklyPlanId: string): Promise<TaskProgress[]>;
+  getTaskProgressByWeeklyPlan(weeklyPlanId: string, userId?: string): Promise<TaskProgress[]>;
   updateTaskStatus(id: string, status: string, progressData?: any): Promise<TaskProgress>;
   markTaskAsInProgress(id: string, progressData?: any): Promise<TaskProgress>;
   markTaskAsCompleted(id: string): Promise<TaskProgress>;
@@ -62,6 +62,7 @@ export interface IStorage {
     weekNumber: number, 
     tasks: Array<{ taskTitle: string; dayNumber: number; initialStatus?: string }>
   ): Promise<TaskProgress[]>;
+  deleteTaskProgressByIds(ids: string[]): Promise<void>;
   
   // Task content operations - new methods for AI-generated content
   getTaskWithContent(id: string): Promise<TaskProgress | undefined>;
@@ -414,11 +415,30 @@ export class DatabaseStorage implements IStorage {
     return progress;
   }
   
-  async getTaskProgressByWeeklyPlan(weeklyPlanId: string): Promise<TaskProgress[]> {
+  async getTaskProgressByWeeklyPlan(weeklyPlanId: string, userId?: string): Promise<TaskProgress[]> {
+    let normalizedUserId: string | undefined;
+
+    if (userId) {
+      const user = await this.getUser(userId);
+      if (user) {
+        normalizedUserId = user.id;
+      } else {
+        console.warn(`[Storage] No user found while filtering task progress for weekly plan ${weeklyPlanId} with user ID ${userId}`);
+        normalizedUserId = undefined;
+      }
+    }
+
+    const conditions = [
+      eq(taskProgress.weeklyPlanId, weeklyPlanId),
+      ...(normalizedUserId ? [eq(taskProgress.userId, normalizedUserId)] : []),
+    ];
+
+    const whereClause = conditions.length === 1 ? conditions[0] : and(...conditions);
+
     return this.orm
       .select()
       .from(taskProgress)
-      .where(eq(taskProgress.weeklyPlanId, weeklyPlanId))
+      .where(whereClause)
       .orderBy(taskProgress.dayNumber);
   }
   
@@ -430,20 +450,19 @@ export class DatabaseStorage implements IStorage {
       updatedAt: new Date()
     };
     
-    if (progressData) {
+    if (progressData !== undefined) {
       updateData.progressData = progressData;
     }
     
-    // If status is 'in-progress' and task hasn't been started yet, set startedAt
-    if (status === 'in-progress') {
+    if (status === 'not-started') {
+      updateData.startedAt = null;
+      updateData.completedAt = null;
+    } else if (status === 'in-progress') {
       const task = await this.getTaskProgress(id);
       if (task && task.status === 'not-started') {
         updateData.startedAt = new Date();
       }
-    }
-    
-    // If status is 'completed', set completedAt
-    if (status === 'completed') {
+    } else if (status === 'completed') {
       updateData.completedAt = new Date();
     }
     
@@ -498,7 +517,7 @@ export class DatabaseStorage implements IStorage {
       }));
       
       // Check if tasks already exist to avoid duplicates
-      const existingTasks = await this.getTaskProgressByWeeklyPlan(weeklyPlanId);
+      const existingTasks = await this.getTaskProgressByWeeklyPlan(weeklyPlanId, userId);
       const existingTaskMap = new Map<string, boolean>();
       
       for (const task of existingTasks) {
@@ -534,6 +553,16 @@ export class DatabaseStorage implements IStorage {
       console.error('[Storage] Error in batch initializing task progress:', error);
       throw error;
     }
+  }
+
+  async deleteTaskProgressByIds(ids: string[]): Promise<void> {
+    if (!ids.length) {
+      return;
+    }
+
+    await this.orm
+      .delete(taskProgress)
+      .where(inArray(taskProgress.id, ids));
   }
   
   // New methods for task content operations
@@ -617,6 +646,10 @@ export class DatabaseStorage implements IStorage {
     
     if (contentUpdate.estimatedDurationSec !== undefined) {
       updateData.estimatedDurationSec = contentUpdate.estimatedDurationSec;
+    }
+
+    if (contentUpdate.taskTitle !== undefined) {
+      updateData.taskTitle = contentUpdate.taskTitle;
     }
     
     // Perform the update

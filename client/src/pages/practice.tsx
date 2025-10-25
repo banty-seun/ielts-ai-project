@@ -186,7 +186,7 @@ const PageShell = ({ children, timerDisplay }: { children: React.ReactNode; time
       <div className="bg-white border-b border-gray-200">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
-            <WouterLink href="/" className="flex items-center text-gray-600 hover:text-gray-900">
+            <WouterLink href="/dashboard" className="flex items-center text-gray-600 hover:text-gray-900">
               <ChevronLeft className="h-5 w-5 mr-2" />
               Back to Dashboard
             </WouterLink>
@@ -253,7 +253,7 @@ const LegacyError = ({ title = "Error Loading Content", message = "Failed to loa
             Try Again
           </button>
         )}
-        <a className="px-4 py-2 rounded border" href="/">Back to Dashboard</a>
+        <WouterLink className="px-4 py-2 rounded border" href="/dashboard">Back to Dashboard</WouterLink>
       </div>
     </div>
   </div>
@@ -282,7 +282,9 @@ const LegacyPracticeLayout = ({
   <div className="container mx-auto px-4 py-6">
     {/* Top bar */}
     <div className="flex items-center justify-between mb-6">
-      <a href="/" className="text-sm text-gray-600 hover:text-gray-900">&larr; Back to Dashboard</a>
+      <WouterLink href="/dashboard" className="text-sm text-gray-600 hover:text-gray-900">
+        &larr; Back to Dashboard
+      </WouterLink>
       {timerDisplay || <div className="text-sm text-gray-500">Session time: <span>—</span></div>}
     </div>
 
@@ -369,11 +371,12 @@ export default function Practice() {
   } = useTaskContent(taskId, { enabled: contentEnabled });
 
   const {
-    taskProgress: progress,
+    taskProgress: progressRecords,
     isLoading: progressLoading,
     error: progressError,
     startTask,
   } = useTaskProgress(taskId ?? "", { enabled: progressEnabled });
+  const activeProgress = Array.isArray(progressRecords) ? progressRecords[0] : undefined;
   
   // Simulate TanStack v5 status patterns for consistency
   const progressStatus = progressLoading ? 'pending' : progressError ? 'error' : 'success';
@@ -387,7 +390,7 @@ export default function Practice() {
       hasContent: Boolean(content?.id),
       progressStatus,
       progressFetchStatus,
-      hasProgress: Boolean(progress),
+      hasProgress: Array.isArray(progressRecords) && progressRecords.length > 0,
     });
   }
 
@@ -419,7 +422,7 @@ export default function Practice() {
   const [creatingNext, setCreatingNext] = useState(false);
 
   // Firebase auth context
-  const { getToken } = useFirebaseAuthContext();
+  const { getToken, currentUser } = useFirebaseAuthContext();
 
   // Ensure startTask runs once per taskId
   const startedRef = useRef<string | null>(null);
@@ -432,13 +435,14 @@ export default function Practice() {
   // Session timer logic
   const sessionMinutes = preferences?.sessionMinutes ?? DEFAULT_SESSION_MINUTES;
   const sessionMsTotal = sessionMinutes * 60 * 1000;
+  const sessionIdentity = user?.id ?? activeProgress?.userId ?? currentUser?.uid ?? null;
   
   // Initialize session start time from localStorage
   useEffect(() => {
-    if (!taskId || !user?.id) return;
+    if (!taskId || !sessionIdentity) return;
     
     const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-    const storageKey = SESSION_START_KEY(user.id, today);
+    const storageKey = SESSION_START_KEY(sessionIdentity, today);
     const stored = localStorage.getItem(storageKey);
     
     if (stored) {
@@ -453,7 +457,7 @@ export default function Practice() {
     }
     
     console.log('[SESSION][config]', { sessionMinutes, sessionMsTotal });
-  }, [taskId, user?.id, sessionMinutes, sessionMsTotal]);
+  }, [taskId, sessionIdentity, sessionMinutes, sessionMsTotal]);
   
   // Update remaining time every second
   useEffect(() => {
@@ -476,6 +480,30 @@ export default function Practice() {
     
     return () => clearInterval(interval);
   }, [sessionStartMs, sessionMsTotal, timerFrozen]);
+
+  // Reset attempt state when switching to a new task
+  useEffect(() => {
+    if (!taskId) return;
+
+    setAnswers({});
+    setCurrentQuestionIndex(0);
+    setIsSubmitted(false);
+    setResults(null);
+    setTimerFrozen(false);
+    setSubmitting(false);
+    setCreatingNext(false);
+    sessionStartRef.current = Date.now();
+
+    const audioEl = audioRef.current;
+    if (audioEl) {
+      audioEl.pause();
+      audioEl.currentTime = 0;
+    }
+
+    setIsPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
+  }, [taskId]);
 
   // Title derivation stays here, single source of truth
   const routeQueryTitle = new URLSearchParams(location.split('?')[1] || '').get('title') ?? undefined;
@@ -711,8 +739,11 @@ export default function Practice() {
           
           if (nextData.ok) {
             console.log('[NEXT][client:nav]', nextData);
-            // Navigate to the new task
-            setLocation(`/practice/${nextData.taskId}?progressId=${nextData.progressId}`);
+            const nextWeekParam = (params as any)?.week ?? String(activeProgress?.weekNumber ?? 'session');
+            const nextDayParam = (params as any)?.day ?? String(activeProgress?.dayNumber ?? 'followup');
+            const weeklyPlanQuery = activeProgress?.weeklyPlanId ? `&weeklyPlanId=${encodeURIComponent(activeProgress.weeklyPlanId)}` : '';
+            const nextPath = `/practice/${encodeURIComponent(nextWeekParam)}/${encodeURIComponent(nextDayParam)}?progressId=${encodeURIComponent(nextData.progressId)}&taskId=${encodeURIComponent(nextData.progressId)}${weeklyPlanQuery}`;
+            setLocation(nextPath);
           } else if (nextData.reason === 'time_exhausted') {
             // Session complete - show in UI
             console.log('[NEXT][client:session_complete]', 'Not enough time for next task');
@@ -915,7 +946,7 @@ export default function Practice() {
           
           <div className="mt-4 pt-4 border-t border-green-200">
             <button
-              onClick={() => window.location.href = "/"}
+              onClick={() => window.location.href = "/dashboard"}
               className="px-4 py-2 bg-gray-900 text-white rounded hover:bg-gray-800 mr-3"
             >
               Back to Dashboard
