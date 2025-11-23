@@ -2,6 +2,7 @@ import { PollyClient, SynthesizeSpeechCommand, Engine, OutputFormat, VoiceId } f
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { uploadPollyMp3 } from "./audio/uploadPollyMp3";
 import { normalizeAccent } from "./utils/audio.ts";
+import { ACCENT_TO_TTS_VOICE, DEFAULT_ACCENT, type Accent } from "../shared/constants";
 
 // Initialize AWS clients
 const DEFAULT_AUDIO_BUCKET = "ielts-ai-audio";
@@ -20,14 +21,14 @@ const s3Client = new S3Client({
   region: awsRegion 
 });
 
-// Accent to Neural voice mapping
-const accentVoiceMap: Record<string, VoiceId> = {
-  British: VoiceId.Amy,         // en-GB, Female, Neural
-  Canadian: VoiceId.Joanna,     // en-CA, Female, Neural  
-  Australian: VoiceId.Olivia,   // en-AU, Female, Neural
-  American: VoiceId.Matthew,    // en-US, Male, Neural
-  NewZealand: VoiceId.Aria,     // en-NZ, Female, Neural
-};
+// Accent to Neural voice mapping derived from shared constants
+const accentVoiceMap = Object.entries(ACCENT_TO_TTS_VOICE).reduce<Record<Accent, VoiceId>>(
+  (map, [accent, voice]) => {
+    map[accent as Accent] = voice as VoiceId;
+    return map;
+  },
+  {} as Record<Accent, VoiceId>,
+);
 
 /**
  * Generate audio from script text using Amazon Polly Neural TTS
@@ -65,10 +66,10 @@ export async function generateAudioFromScript(
       defaultBucketWarningLogged = true;
     }
 
-    const normalizedAccent = normalizeAccent(accent);
+    const normalizedAccent = normalizeAccent(accent ?? DEFAULT_ACCENT);
 
     // Map accent to Neural voice (default to British if not found)
-    const voiceId = accentVoiceMap[normalizedAccent] || accentVoiceMap.British;
+    const voiceId = accentVoiceMap[normalizedAccent] || accentVoiceMap[DEFAULT_ACCENT];
     
     console.log(`[Audio Generation] Generating audio for task ${taskId}:`, {
       requestedAccent: accent,
@@ -203,7 +204,9 @@ export async function generateAudioFromScript(
     console.error(`[Audio Debug] Script length: ${scriptText.length} characters`);
     console.error(`[Audio Debug] Requested accent: ${accent}`);
     console.error(`[Audio Debug] Normalized accent: ${normalizeAccent(accent)}`);
-    console.error(`[Audio Debug] Selected voice ID: ${accentVoiceMap[normalizeAccent(accent)] || accentVoiceMap.British}`);
+    console.error(
+      `[Audio Debug] Selected voice ID: ${accentVoiceMap[normalizeAccent(accent)] || accentVoiceMap[DEFAULT_ACCENT]}`,
+    );
     console.error(`[Audio Debug] AWS Region: ${awsRegion}`);
     console.error(
       `[Audio Debug] S3 Bucket: ${audioBucket}${usingDefaultBucket ? " (default)" : ""}`

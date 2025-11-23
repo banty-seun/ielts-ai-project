@@ -13,6 +13,10 @@ interface OnboardingStatusResponse {
     dailyCommitment?: string;
     schedule?: string;
     style?: string;
+    listeningDurations?: {
+      weekday?: number;
+      weekend?: number;
+    };
   };
 }
 
@@ -83,7 +87,8 @@ export function useOnboardingStatus() {
           onboardingCompleted: data.onboardingCompleted,
           userId: data.userId || 'not provided',
           firebaseUid: data.firebaseUid || 'not provided',
-          source: data.source || 'unknown'
+          source: data.source || 'unknown',
+          listeningDurations: data.preferences?.listeningDurations || 'not provided'
         });
         
         return data;
@@ -138,7 +143,8 @@ export function useOnboardingStatus() {
     authLoading,
     queryLoading,
     hasUser: !!currentUser,
-    dataUpdatedAt: dataUpdatedAt ? new Date(dataUpdatedAt).toISOString() : 'unknown'
+    dataUpdatedAt: dataUpdatedAt ? new Date(dataUpdatedAt).toISOString() : 'unknown',
+    listeningDurations: data?.preferences?.listeningDurations || 'not provided'
   });
 
   return {

@@ -401,17 +401,32 @@ export function TaskListWithProgress({
 
       // Navigate to practice page with all necessary params
       const target = `/practice/${weekNumber}/${dayNumber}?title=${encodeURIComponent(task.title)}&skill=${encodeURIComponent(task.skill)}&progressId=${progressId}&taskId=${progressId}&weeklyPlanId=${weeklyPlanId}`;
-      
+
       console.log('[TASK ROUTING] Dashboard navigation details:', {
         taskTitle: task.title,
         weekNumber,
         dayNumber,
         progressId,
+        progressIdType: typeof progressId,
+        progressIdLength: progressId?.length,
         taskId: progressId, // Using progressId as taskId
         weeklyPlanId,
+        taskData: task,
         targetUrl: target
       });
-      
+
+      // Validate progressId format before navigation
+      if (!progressId || progressId.length < 10) {
+        console.error('[TASK ROUTING] Invalid progressId format:', { progressId, task });
+        toast({
+          title: 'Invalid Task ID',
+          description: 'The task ID format is invalid. Please try again.',
+          variant: 'destructive'
+        });
+        setStartingTaskId(null);
+        return;
+      }
+
       setLocation(target);
     } catch (error) {
       console.error('[TaskList] Navigation error:', error);

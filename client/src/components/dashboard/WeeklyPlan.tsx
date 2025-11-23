@@ -1,6 +1,6 @@
 import React from 'react';
 import { cn } from '../../lib/utils';
-import { useWeeklyPlan, WeeklyPlan as WeeklyPlanType, WeeklyPlanErrorType } from '../../hooks/useWeeklyPlan';
+import { useWeeklyPlan, WeeklyPlan as WeeklyPlanType, WeeklyPlanErrorType, WeeklyPlanTask } from '../../hooks/useWeeklyPlan';
 import { Card, CardContent } from '../../components/ui/card';
 import { Skeleton } from '../../components/ui/skeleton';
 import { Button } from '../../components/ui/button';
@@ -229,8 +229,11 @@ export default function WeeklyPlan({
   }
 
   // Extract plan data and use the appropriate week number
-  const { planData, weekNumber: planWeekNumber, skillFocus: planSkillFocus } = plan;
-  const { weekFocus = 'Weekly focus not available', plan: tasks = [] } = planData || {};
+  const { planData, weekNumber: planWeekNumber, skillFocus: planSkillFocus, weekFocus: topLevelWeekFocus } = plan;
+  const tasks: WeeklyPlanTask[] = Array.isArray(planData?.plan)
+    ? (planData?.plan as WeeklyPlanTask[])
+    : [];
+  const weekFocusText = planData?.weekFocus || topLevelWeekFocus || 'Weekly focus not available';
   const displayedWeekNumber = planWeekNumber || weekNumber;
   const displayedSkill = planSkillFocus || skillFocus;
 
@@ -246,7 +249,7 @@ export default function WeeklyPlan({
           )}
           
           <h3 className="text-base font-medium mb-6">
-            This week's focus: <span className="font-medium">{weekFocus}</span>
+            This week's focus: <span className="font-medium">{weekFocusText}</span>
           </h3>
           
           <Separator className="my-4" />
