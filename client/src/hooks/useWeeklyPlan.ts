@@ -16,6 +16,12 @@ export interface WeeklyPlanTask {
   topicDomain?: string;
   originalTitle?: string;
   dayNumber?: number;
+  dayType?: string;
+  sessionMinutes?: number;
+  audioDurationMinutes?: number;
+  progressId?: string | null;
+  assignedDate?: string;
+  durationMinutes?: number;
 }
 
 export interface WeeklyPlan {
@@ -83,14 +89,17 @@ export function useWeeklyPlan(weekNumber: number, skillFocus: string): WeeklyPla
         console.log("Weekly plan data is null or invalid:", data);
         return null;
       }
-      
+
       // Extract the specific skill focus from the grouped skills data
-      const skillPlan = data.skills[skillFocus];
+      // Make it case-insensitive to handle both 'listening' and 'Listening'
+      const normalizedSkillFocus = skillFocus.toLowerCase();
+      const skillPlan = data.skills[normalizedSkillFocus] || data.skills[skillFocus];
       if (!skillPlan) {
-        console.log(`No plan found for skill: ${skillFocus} in week ${weekNumber}`);
+        console.log(`No plan found for skill: ${skillFocus} in week ${weekNumber}`,
+          'Available skills:', Object.keys(data.skills));
         return null;
       }
-      
+
       console.log(`Weekly plan data received for ${skillFocus} - Week ${weekNumber}:`, skillPlan.id);
       return skillPlan as WeeklyPlan;
     },

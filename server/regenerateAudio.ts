@@ -1,6 +1,7 @@
 import { S3Client, PutObjectCommand, HeadObjectCommand, GetBucketPolicyCommand } from "@aws-sdk/client-s3";
 import { storage } from "./storage";
 import { generateAudioFromScript } from "./audioService";
+import { validateTranscriptComplete } from "./services/content";
 
 const BUCKET = "ielts-ai-audio";
 const REGION = "eu-west-2";
@@ -82,6 +83,12 @@ export async function regenerateAndVerify(taskId: string) {
     }
     
     console.log(`[REGEN] Found task for user ${taskProgress.userId}, week ${taskProgress.weekNumber}`);
+    
+    const scriptValidation = validateTranscriptComplete(taskWithContent.scriptText);
+    if (!scriptValidation.ok) {
+      console.error(`[REGEN] Script validation failed for ${taskId}`, { reason: scriptValidation.reason });
+      return { ok: false, error: "Script incomplete" };
+    }
     
     // Generate audio with British accent using existing service
     const audioResult = await generateAudioFromScript(

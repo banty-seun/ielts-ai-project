@@ -30,7 +30,26 @@ export type TaskContent = {
   replayLimit?: number | 3;
 };
 
-type ApiOk = { success: true; taskContent: any };
+type ApiOk = {
+  success: true;
+  taskContent: any;
+  ready?: boolean;
+  phase?: string;
+  etaSecs?: number | null;
+  taskSummary?: {
+    id: string;
+    title: string;
+    activityType?: string;
+    scenario?: string;
+    sessionMinutes?: number | null;
+  } | null;
+  session?: {
+    status: string;
+    retryCount: number;
+    message: string;
+    errorCode?: string | null;
+  };
+};
 type ApiErr = { success: false; message?: string };
 
 export function useTaskContent(
@@ -93,10 +112,10 @@ export function useTaskContent(
     },
     select: (data: any) => {
       const tc = data?.taskContent ?? {};
-      
+
       // Normalize questions from server format to UI format
       const rawQs: any[] = Array.isArray(tc.questions) ? tc.questions : [];
-      
+
       const normalizedQuestions: UiQuestion[] = rawQs
         .map((q: any, qi: number): UiQuestion | null => {
           // Normalize id
@@ -147,18 +166,27 @@ export function useTaskContent(
           sample: normalizedQuestions[0]
         });
       }
-      
+
       return {
-        id: typeof tc.id === 'string' ? tc.id : taskId,
-        title: tc.taskTitle ?? tc.title ?? null,
-        scenario: tc.scenario ?? null,
-        conversationType: tc.conversationType ?? null,
-        scriptText: tc.scriptText ?? null,
-        audioUrl: tc.audioUrl ?? null,
-        questions: normalizedQuestions,
-        accent: tc.accent ?? 'British',
-        duration: typeof tc.duration === 'number' ? tc.duration : 0,
-        replayLimit: typeof tc.replayLimit === 'number' ? tc.replayLimit : 3,
+        data: {
+          id: typeof tc.id === 'string' ? tc.id : taskId,
+          title: tc.taskTitle ?? tc.title ?? null,
+          scenario: tc.scenario ?? null,
+          conversationType: tc.conversationType ?? null,
+          scriptText: tc.scriptText ?? null,
+          audioUrl: tc.audioUrl ?? null,
+          questions: normalizedQuestions,
+          accent: tc.accent ?? 'British',
+          duration: typeof tc.duration === 'number' ? tc.duration : 0,
+          replayLimit: typeof tc.replayLimit === 'number' ? tc.replayLimit : 3,
+        },
+        // Readiness metadata
+        ready: data?.ready ?? true, // default to true for backward compatibility
+        phase: data?.phase ?? 'idle',
+        etaSecs: data?.etaSecs ?? null,
+        taskSummary: data?.taskSummary ?? null,
+        session: data?.session ?? null,
+        error: null,
       };
     },
   });

@@ -18,7 +18,7 @@ import {
   type InsertTaskAttempt,
 } from "@shared/schema";
 import { db, schema } from "./db";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, desc } from "drizzle-orm";
 import { type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { sql } from "drizzle-orm/sql";
 import { v4 as uuid } from "uuid";
@@ -49,17 +49,26 @@ export interface IStorage {
   createOrUpdateWeeklyStudyPlan(userId: string, weekNumber: number, skillFocus: string, weekFocus: string, planData: any): Promise<WeeklyStudyPlan>;
   
   // Task progress operations
+  findTaskProgressByScope(params: {
+    userId: string;
+    weeklyPlanId: string;
+    dayNumber: number;
+    taskTitle: string;
+    skill: string;
+  }): Promise<TaskProgress | undefined>;
   createTaskProgress(taskProgressData: InsertTaskProgress): Promise<TaskProgress>;
   getTaskProgress(id: string): Promise<TaskProgress | undefined>;
   getTaskProgressByUserAndTask(userId: string, weekNumber: number, dayNumber: number): Promise<TaskProgress | undefined>;
   getTaskProgressByWeeklyPlan(weeklyPlanId: string, userId?: string): Promise<TaskProgress[]>;
+  getRecentTaskProgressBySkill(userId: string, skill: string, limit: number): Promise<TaskProgress[]>;
   updateTaskStatus(id: string, status: string, progressData?: any): Promise<TaskProgress>;
+  updateTaskProgress(id: string, updates: Partial<InsertTaskProgress>): Promise<TaskProgress>;
   markTaskAsInProgress(id: string, progressData?: any): Promise<TaskProgress>;
   markTaskAsCompleted(id: string): Promise<TaskProgress>;
   batchInitializeTaskProgress(
-    userId: string, 
-    weeklyPlanId: string, 
-    weekNumber: number, 
+    userId: string,
+    weeklyPlanId: string,
+    weekNumber: number,
     tasks: Array<{ taskTitle: string; dayNumber: number; initialStatus?: string }>
   ): Promise<TaskProgress[]>;
   deleteTaskProgressByIds(ids: string[]): Promise<void>;
@@ -375,6 +384,31 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Task progress operations
+  async findTaskProgressByScope(params: {
+    userId: string;
+    weeklyPlanId: string;
+    dayNumber: number;
+    taskTitle: string;
+    skill: string;
+  }): Promise<TaskProgress | undefined> {
+    const { userId, weeklyPlanId, dayNumber, taskTitle, skill } = params;
+
+    const [existing] = await this.orm
+      .select()
+      .from(taskProgress)
+      .where(
+        and(
+          eq(taskProgress.userId, userId),
+          eq(taskProgress.weeklyPlanId, weeklyPlanId),
+          eq(taskProgress.dayNumber, dayNumber),
+          eq(taskProgress.taskTitle, taskTitle),
+          eq(taskProgress.skill, skill),
+        ),
+      );
+
+    return existing;
+  }
+
   async createTaskProgress(taskProgressData: InsertTaskProgress): Promise<TaskProgress> {
     console.log(`[Storage] Creating task progress for user ${taskProgressData.userId}, week ${taskProgressData.weekNumber}, day ${taskProgressData.dayNumber}`);
     
@@ -441,19 +475,33 @@ export class DatabaseStorage implements IStorage {
       .where(whereClause)
       .orderBy(taskProgress.dayNumber);
   }
+
+  async getRecentTaskProgressBySkill(userId: string, skill: string, limit: number): Promise<TaskProgress[]> {
+    return this.orm
+      .select()
+      .from(taskProgress)
+      .where(
+        and(
+          eq(taskProgress.userId, userId),
+          eq(taskProgress.skill, skill),
+        ),
+      )
+      .orderBy(desc(taskProgress.completedAt), desc(taskProgress.updatedAt))
+      .limit(limit);
+  }
   
   async updateTaskStatus(id: string, status: string, progressData?: any): Promise<TaskProgress> {
     console.log(`[Storage] Updating task progress ${id} to status: ${status}`);
-    
+
     const updateData: any = {
       status,
       updatedAt: new Date()
     };
-    
+
     if (progressData !== undefined) {
       updateData.progressData = progressData;
     }
-    
+
     if (status === 'not-started') {
       updateData.startedAt = null;
       updateData.completedAt = null;
@@ -465,20 +513,37 @@ export class DatabaseStorage implements IStorage {
     } else if (status === 'completed') {
       updateData.completedAt = new Date();
     }
-    
+
     const [updatedTask] = await this.orm
       .update(taskProgress)
       .set(updateData)
       .where(eq(taskProgress.id, id))
       .returning();
-      
+
     return updatedTask;
   }
-  
+
+  async updateTaskProgress(id: string, updates: Partial<InsertTaskProgress>): Promise<TaskProgress> {
+    console.log(`[Storage] Updating task progress ${id}`, updates);
+
+    const updateData: any = {
+      ...updates,
+      updatedAt: new Date()
+    };
+
+    const [updatedTask] = await this.orm
+      .update(taskProgress)
+      .set(updateData)
+      .where(eq(taskProgress.id, id))
+      .returning();
+
+    return updatedTask;
+  }
+
   async markTaskAsInProgress(id: string, progressData?: any): Promise<TaskProgress> {
     return this.updateTaskStatus(id, 'in-progress', progressData);
   }
-  
+
   async markTaskAsCompleted(id: string): Promise<TaskProgress> {
     return this.updateTaskStatus(id, 'completed');
   }

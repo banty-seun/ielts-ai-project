@@ -757,12 +757,6 @@ function SummaryStep() {
         throw new Error("Please select your immigration goal");
       }
 
-      if (!onboardingData.studyPreferences.dailyCommitment || 
-          !onboardingData.studyPreferences.schedule || 
-          !onboardingData.studyPreferences.style) {
-        throw new Error("Please complete all study preference selections");
-      }
-
       // Sanitize data for safe transmission
       const sanitizedData = {
         fullName: onboardingData.fullName.trim(),
@@ -782,10 +776,15 @@ function SummaryStep() {
         },
         immigrationGoal: onboardingData.immigrationGoal,
         studyPreferences: {
-          dailyCommitment: onboardingData.studyPreferences.dailyCommitment,
-          schedule: onboardingData.studyPreferences.schedule,
-          style: onboardingData.studyPreferences.style
-        }
+          dailyCommitment: '30mins',
+          schedule: 'both',
+          style: 'ai-guided',
+          sessionMinutes: 30,
+          listeningDurations: {
+            weekday: 30,
+            weekend: 30,
+          }
+        },
       };
 
       console.log('Generating AI plan with user data:', JSON.stringify(sanitizedData, null, 2));
@@ -969,7 +968,6 @@ const STEP_COMPONENTS = [
   TestDateStep,
   SkillRatingStep,
   ImmigrationGoalStep,
-  StudyPreferencesStep,
   SummaryStep
 ];
 
@@ -1073,40 +1071,8 @@ function OnboardingContainer() {
     );
   }
 
-  // Custom handler for StudyPreferencesStep (Step 7)
-  if (onboardingData.currentStep === 7) {
-    // Check if all three study preferences are set
-    const allPreferencesSet = 
-      !!onboardingData.studyPreferences.dailyCommitment && 
-      !!onboardingData.studyPreferences.schedule && 
-      !!onboardingData.studyPreferences.style;
-
-    return (
-      <OnboardingLayout 
-        showBackButton={true}
-        nextButtonText={buttonText}
-        // Enable Continue only if all three preferences are set
-        nextButtonDisabled={!allPreferencesSet}
-        onNext={() => {
-          // Log data for verification
-          console.log('Step 7 - Study Preferences Data:', {
-            studyPreferences: onboardingData.studyPreferences,
-            dailyCommitment: onboardingData.studyPreferences.dailyCommitment,
-            schedule: onboardingData.studyPreferences.schedule,
-            style: onboardingData.studyPreferences.style,
-            allSet: allPreferencesSet
-          });
-          goToNextStep();
-        }}
-        onBack={goToPreviousStep}
-      >
-        <CurrentStepComponent />
-      </OnboardingLayout>
-    );
-  }
-
-  // Custom handler for SummaryStep (Step 8)
-  if (onboardingData.currentStep === 8) {
+  // Custom handler for SummaryStep
+  if (onboardingData.currentStep === onboardingData.totalSteps) {
     return (
       <OnboardingLayout 
         showBackButton={true}

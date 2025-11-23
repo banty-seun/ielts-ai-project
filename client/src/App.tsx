@@ -17,6 +17,7 @@ import Onboarding from "@/pages/onboarding";
 import Dashboard from "@/pages/dashboard";
 import Calendar from "@/pages/calendar";
 import Practice from "@/pages/practice";
+import ListeningSession from "@/pages/listening-session";
 import DebugPage from "@/pages/debug";
 import DebugToken from "@/pages/debug-token";
 import ErrorTest from "@/pages/error-test";
@@ -57,6 +58,12 @@ const ProtectedDebugToken = () => (
   </ProtectedRoute>
 );
 
+const ProtectedListeningSession = () => (
+  <ProtectedRoute requireOnboarding={true}>
+    <ListeningSession />
+  </ProtectedRoute>
+);
+
 function Router() {
   return (
     <Switch>
@@ -65,7 +72,9 @@ function Router() {
       <Route path="/login" component={Login} />
       <Route path="/dashboard" component={ProtectedDashboard} />
       <Route path="/dashboard/calendar" component={ProtectedCalendar} />
+      <Route path="/practice/:progressId" component={ProtectedPractice} />
       <Route path="/practice/:week/:day" component={ProtectedPractice} />
+      <Route path="/listening-session" component={ProtectedListeningSession} />
       <Route path="/verify-email" component={VerifyEmail} />
       <Route path="/verify-success" component={VerifySuccess} />
       <Route path="/verify-handler" component={VerifyHandler} />

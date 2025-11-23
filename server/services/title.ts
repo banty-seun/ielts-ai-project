@@ -40,21 +40,22 @@ export function deriveMode(meta: {
 }
 
 /**
- * Get appropriate suffix for the mode
+ * Get appropriate prefix for the mode (listening test type)
  */
-export function suffixForMode(mode: Mode): string {
+export function prefixForMode(mode: Mode): string {
   switch (mode) {
-    case 'lecture':     return 'Lecture Analysis';
+    case 'lecture':     return 'Lecture';
     case 'discussion':  return 'Discussion';
     case 'monologue':   return 'Monologue';
     case 'dialogue':
-    default:            return 'Dialogue Practice';
+    default:            return 'Dialogue';
   }
 }
 
 /**
  * Generate a dynamic listening task title
- * Examples: "Office Dialogue Practice", "Museum Guide Monologue", "Academic Lecture Analysis"
+ * Format: "{Test Type}: {Scenario}"
+ * Examples: "Dialogue: Introduction To IELTS Listening", "Monologue: Summer Programs", "Lecture: Academic Research"
  */
 export function makeListeningTaskTitle(meta: {
   scriptType?: ScriptType | null;
@@ -62,9 +63,11 @@ export function makeListeningTaskTitle(meta: {
   topicDomain?: string | null;
   scenarioOverview?: string | null;
 }): string {
-  const baseRaw = meta.contextLabel?.trim() || meta.topicDomain?.trim() || 'Listening Practice';
-  const base = toTitleCase(baseRaw);
-  return `${base} ${suffixForMode(deriveMode(meta))}`;
+  const mode = deriveMode(meta);
+  const testType = prefixForMode(mode);
+  const scenarioRaw = meta.contextLabel?.trim() || meta.topicDomain?.trim() || 'Listening Practice';
+  const scenario = toTitleCase(scenarioRaw);
+  return `${testType}: ${scenario}`;
 }
 
 /**

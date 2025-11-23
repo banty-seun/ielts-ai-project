@@ -1,4 +1,4 @@
-import { pgTable, text, varchar, timestamp, jsonb, index, integer, boolean, decimal, uuid } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, jsonb, index, integer, boolean, decimal, uuid, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -91,7 +91,15 @@ export const taskProgress = pgTable("task_progress", {
   
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
-});
+}, (table) => [
+  uniqueIndex("task_progress_unique_scope_idx").on(
+    table.userId,
+    table.weeklyPlanId,
+    table.dayNumber,
+    table.taskTitle,
+    table.skill,
+  ),
+]);
 
 // Task Attempts table for AI Coach analytics
 export const taskAttempts = pgTable("task_attempts", {
@@ -128,6 +136,10 @@ export const onboardingSchema = z.object({
     schedule: z.enum(["weekday", "weekend", "both"]),
     style: z.enum(["ai-guided", "self-paced", "mixed"]),
     sessionMinutes: z.number().min(5).max(120).optional(), // Minutes per practice session (5-120)
+    listeningDurations: z.object({
+      weekday: z.number().min(5).max(180).optional(),
+      weekend: z.number().min(5).max(180).optional(),
+    }).partial().optional(),
   }),
   weekNumber: z.number().optional(), // Optional week number for weekly plan generation
 });
@@ -156,6 +168,9 @@ export interface Question {
   options?: QuestionOption[];
   correctAnswer?: string;
   explanation?: string;
+  tags?: string[];
+  type?: string;
+  text?: string;
 }
 
 // Task Attempt types for AI Coach analytics
@@ -178,6 +193,38 @@ export interface TaskAttempt {
   durationMs: number;
   answers: TaskAttemptAnswer[];
   score: { correct: number; total: number; percent: number };
+}
+
+// Session state types for listening practice
+export type SessionStatus = "running" | "paused" | "completed" | "expired";
+
+export interface SessionAudioResult {
+  index: number;
+  correct: number;
+  total: number;
+  timeSpentMs?: number;
+}
+
+export interface SessionResult {
+  completedAt: number;         // epoch ms
+  usedMs: number;               // actual time spent
+  scoreOverall: number;         // 0..1 (e.g., 0.75 = 75%)
+  audios: SessionAudioResult[];
+  advisorHighlights: string[];  // cached AI feedback bullets
+}
+
+export interface SessionState {
+  status: SessionStatus;
+  durationMinutes: number;      // from onboarding for that day
+  startedAt?: number;            // epoch ms (set when session starts)
+  pausedAt?: number;             // epoch ms (set when paused)
+  consumedMs: number;            // accumulated active time
+  remainingMs: number;           // server-calculated, source of truth
+  currentAudioIndex: number;     // 0-based in the prefetched list
+  prefetchedAudios?: any[];      // audio package from session start
+  sessionResult?: SessionResult; // populated when completed/expired
+  readyForStrike?: boolean;      // true when completed/expired
+  lastSyncedAt?: number;         // last server sync timestamp (for drift prevention)
 }
 
 export const insertStudyPlanSchema = createInsertSchema(studyPlans, {
@@ -233,3 +280,17 @@ export const taskContentUpdateSchema = z.object({
   estimatedDurationSec: z.number().optional(),
   taskTitle: z.string().optional(),
 });
+
+// AI Advisor feedback types
+export interface AdvisorFeedback {
+  success: boolean;
+  scoreText?: string;
+  summary?: string;
+  actions?: string[];
+  error?: string;
+  // Optional additional fields for enhanced feedback
+  praise?: string;
+  progressSummary?: string;
+  suggestion?: string;
+  nextTaskPreview?: string;
+}

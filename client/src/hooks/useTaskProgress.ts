@@ -20,6 +20,7 @@ export interface TaskProgress {
   taskTitle: string;
   status: 'not-started' | 'in-progress' | 'completed';
   progressData?: any;
+  duration?: number; // Session duration in minutes (from normalized task)
   startedAt?: string;
   completedAt?: string;
   createdAt: string;
@@ -44,6 +45,21 @@ export interface TaskProgressResponse {
 }
 
 // Return type for our hook
+export interface StartTaskPayload {
+  weeklyPlanId: string;
+  weekNumber?: number;
+  dayNumber: number;
+  taskTitle: string;
+  skill?: string;
+  planEntry?: Record<string, any>;
+}
+
+export interface StartTaskResponse {
+  id: string;
+  duration: number;
+  progressData?: any;
+}
+
 export interface UseTaskProgressResult {
   taskProgress: TaskProgress[];
   isLoading: boolean;
@@ -53,7 +69,7 @@ export interface UseTaskProgressResult {
   refetch: () => Promise<any>;
   createTaskProgress: (data: { weeklyPlanId: string; weekNumber: number; dayNumber: number; taskTitle: string }) => Promise<TaskProgressResponse>;
   updateTaskStatus: (data: { taskId: string; status: 'not-started' | 'in-progress' | 'completed'; progressData?: any }) => Promise<TaskProgressResponse>;
-  startTask: (data: { taskId: string; progressData?: any }) => Promise<TaskProgressResponse>;
+  startTask: (data: StartTaskPayload) => Promise<StartTaskResponse>;
   completeTask: (data: { taskId: string; progressData?: any }) => Promise<TaskProgressResponse>;
 }
 
@@ -67,7 +83,7 @@ const defaultTaskProgressResult: UseTaskProgressResult = {
   refetch: async () => ({}),
   createTaskProgress: async () => ({ success: false }),
   updateTaskStatus: async () => ({ success: false }),
-  startTask: async () => ({ success: false }),
+  startTask: async () => ({ id: '', duration: 0 }),
   completeTask: async () => ({ success: false }),
 };
 
@@ -346,41 +362,35 @@ export function useTaskProgress(
     },
   });
 
-  const startTaskMutation = useMutation<
-    TaskProgressResponse,
-    Error,
-    { taskId: string; progressData?: any }
-  >({
-    mutationFn: async (data) => {
-      console.log('[TaskProgress] Starting task:', data);
-      // Track this operation
+  const startTaskMutation = useMutation<StartTaskResponse, Error, StartTaskPayload>({
+    mutationFn: async (payload) => {
+      console.log('[TaskProgress] Starting task via /api/task-progress/start', payload);
       sharedTracker.trackWrite('task_progress', 1);
-      
-      const response = await fetch(`/api/firebase/task-progress/${data.taskId}/start`, {
-        method: 'PATCH',
+
+      const token = tokenManager.getToken();
+      const response = await fetch('/api/task-progress/start', {
+        method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${tokenManager.getToken()}`
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify({ progressData: data.progressData }),
+        body: JSON.stringify(payload),
       });
-      
+
       if (!response.ok) {
         let msg: string;
         try {
           const body = await response.json();
           msg = body.message || JSON.stringify(body);
         } catch {
-          msg = response.statusText || await response.text() || 'Unknown error';
+          msg = response.statusText || (await response.text()) || 'Unknown error';
         }
         throw new Error(`Failed to start task (${response.status}): ${msg}`);
       }
-      
-      return await response.json();
+
+      return response.json();
     },
-    onSuccess: (data) => {
-      console.log('[TaskProgress] Task started successfully:', data);
-      // Invalidate the query to refresh the data
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey });
     },
   });
@@ -442,11 +452,10 @@ export function useTaskProgress(
   );
 
   const startTask = useCallback(
-    async (data: { taskId: string; progressData?: any }): Promise<TaskProgressResponse> => {
-      console.log('[TaskProgress] Starting task via callback:', data);
+    async (data: StartTaskPayload): Promise<StartTaskResponse> => {
       return startTaskMutation.mutateAsync(data);
     },
-    [startTaskMutation]
+    [startTaskMutation],
   );
 
   const completeTask = useCallback(
