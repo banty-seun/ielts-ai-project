@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useListeningSession } from '@/hooks/useListeningSession';
 import { SessionState, Question, AdvisorFeedback as AdvisorFeedbackType } from '../../../../shared/schema';
+import type { ListeningRendererRoot } from '@shared/listening';
 import { AdvisorFeedback } from './AdvisorFeedback';
 import { SessionSummary } from './SessionSummary';
+import { ConfigDrivenListeningRenderer } from './ConfigDrivenListeningRenderer';
 import { Play, Pause, Clock, Volume2, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
@@ -17,6 +19,7 @@ interface ListeningPracticeSessionProps {
 interface AudioPackage {
   audioUrl: string;
   questions: Question[];
+  rendererPayload?: ListeningRendererRoot | null;
   scriptText?: string;
   accent?: string;
   duration?: number;
@@ -40,6 +43,7 @@ export function ListeningPracticeSession({
   onSessionComplete,
   onExit,
 }: ListeningPracticeSessionProps) {
+  const rendererEnabled = (import.meta as any).env?.VITE_LISTENING_RENDERER_ENABLED === 'true';
   const [currentAudio, setCurrentAudio] = useState<AudioPackage | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [replaysRemaining, setReplaysRemaining] = useState(3);
@@ -191,7 +195,9 @@ export function ListeningPracticeSession({
 
   // Calculate how many questions are answered
   const answeredCount = Object.keys(answers).length;
-  const totalQuestions = currentAudio.questions.length;
+  const totalQuestions = rendererEnabled && currentAudio.rendererPayload
+    ? currentAudio.rendererPayload.blocks.reduce((sum, block) => sum + block.questions.length, 0)
+    : currentAudio.questions.length;
   const allAnswered = answeredCount === totalQuestions;
 
   return (
@@ -337,37 +343,63 @@ export function ListeningPracticeSession({
           </div>
 
           <div className="space-y-6 max-h-[600px] overflow-y-auto pr-2">
-            {currentAudio.questions.map((question, idx) => (
-              <div
-                key={question.id}
-                className="border border-gray-200 rounded-lg p-4 space-y-3"
-              >
-                <div className="font-medium text-gray-900">
-                  {idx + 1}. {question.question}
-                </div>
-
-                {question.options && (
-                  <div className="space-y-2">
-                    {question.options.map(option => (
-                      <label
-                        key={option.id}
-                        className="flex items-center gap-3 p-3 border border-gray-200 rounded-lg hover:bg-gray-50 cursor-pointer transition-colors"
-                      >
-                        <input
-                          type="radio"
-                          name={question.id}
-                          value={option.id}
-                          checked={answers[question.id] === option.id}
-                          onChange={(e) => handleAnswerChange(question.id, e.target.value)}
-                          className="w-4 h-4 text-indigo-600"
-                        />
-                        <span className="text-gray-700">{option.text}</span>
-                      </label>
-                    ))}
+            {rendererEnabled && currentAudio.rendererPayload ? (
+              <ConfigDrivenListeningRenderer
+                payload={currentAudio.rendererPayload}
+                answers={answers}
+                onAnswerChange={handleAnswerChange}
+                readOnly={isSubmitting}
+                onTelemetry={(event) => {
+                  console.warn('[ListeningRenderer][Telemetry]', event);
+                  window.dispatchEvent(new CustomEvent('listening-renderer-telemetry', { detail: event }));
+                  void fetch('/api/listening/renderer-telemetry', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      taskProgressId: taskId,
+                      mode: rendererEnabled && currentAudio.rendererPayload ? 'dual' : 'legacy',
+                      eventType: event.type,
+                      details: {
+                        engine: event.engine,
+                        blockId: event.blockId,
+                      },
+                    }),
+                  }).catch(() => undefined);
+                }}
+              />
+            ) : (
+              currentAudio.questions.map((question, idx) => (
+                <div
+                  key={question.id}
+                  className="border border-gray-200 rounded-lg p-4 space-y-3"
+                >
+                  <div className="font-medium text-gray-900">
+                    {idx + 1}. {question.question}
                   </div>
-                )}
-              </div>
-            ))}
+
+                  {question.options && (
+                    <div className="space-y-2">
+                      {question.options.map(option => (
+                        <label
+                          key={option.id}
+                          className="flex items-center gap-3 p-3 border border-gray-200 rounded-lg hover:bg-gray-50 cursor-pointer transition-colors"
+                        >
+                          <input
+                            type="radio"
+                            name={question.id}
+                            value={option.id}
+                            checked={answers[question.id] === option.id}
+                            onChange={(e) => handleAnswerChange(question.id, e.target.value)}
+                            className="w-4 h-4 text-indigo-600"
+                          />
+                          <span className="text-gray-700">{option.text}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
           </div>
 
           {/* Submit button */}

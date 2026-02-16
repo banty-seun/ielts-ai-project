@@ -91,6 +91,18 @@ export default function ListeningSession() {
           throw new Error('Not authenticated');
         }
 
+        // Best-effort startup boost so Part 1 readiness is prioritized before session entry.
+        void fetchWithAuth('/api/listening/readiness/boost', token, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            taskProgressId: progressKey,
+            source: 'session_open',
+          }),
+        }).catch(() => undefined);
+
         // First, try to fetch existing session state (server will also recalc remaining time)
         const syncData = await fetchWithAuth<{ success: boolean; sessionState: SessionState | null }>(
           `/api/session/sync/${encodeURIComponent(progressKey)}`,

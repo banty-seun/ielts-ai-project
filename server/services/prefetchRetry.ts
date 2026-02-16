@@ -18,7 +18,32 @@ export interface RetryContext {
   errorCode?: string;
   currentRetryCount: number;
   skillType?: 'listening' | 'reading' | 'writing' | 'speaking';
+  traceId?: string;
+  correlationId?: string;
+  stage?: string;
 }
+
+const retryMetrics = {
+  scheduled: 0,
+  executed: 0,
+  failed: 0,
+  exhausted: 0,
+  byErrorCode: {} as Record<string, number>,
+  byStage: {} as Record<string, number>,
+  updatedAt: new Date().toISOString(),
+};
+
+const incrementMetric = (key: keyof typeof retryMetrics, value = 1) => {
+  if (typeof retryMetrics[key] === "number") {
+    (retryMetrics[key] as number) += value;
+  }
+  retryMetrics.updatedAt = new Date().toISOString();
+};
+
+const incrementMapMetric = (target: Record<string, number>, key: string) => {
+  target[key] = (target[key] ?? 0) + 1;
+  retryMetrics.updatedAt = new Date().toISOString();
+};
 
 /**
  * Central retry policy for prefetch jobs
@@ -32,10 +57,16 @@ export async function retryPrefetchJob(
   prefetchFn: (taskId: string, userId: string) => Promise<void>
 ): Promise<boolean> {
   const { taskId, userId, batchId, errorCode, currentRetryCount, skillType = 'listening' } = context;
+  const stage = context.stage ?? "unknown_stage";
+  const traceId = context.traceId ?? `trc_retry_${batchId}`;
+  const correlationId = context.correlationId ?? batchId;
 
   // Central retry policy
   const maxRetries = PREFETCH_RETRY_DELAYS.length;
   if (currentRetryCount >= maxRetries) {
+    incrementMetric("exhausted");
+    incrementMapMetric(retryMetrics.byStage, stage);
+    if (errorCode) incrementMapMetric(retryMetrics.byErrorCode, errorCode);
     console.error('[Retry][Exhausted]', {
       batchId,
       taskId,
@@ -43,6 +74,9 @@ export async function retryPrefetchJob(
       skillType,
       errorCode,
       attempts: currentRetryCount,
+      traceId,
+      correlationId,
+      stage,
     });
     return false;
   }
@@ -61,19 +95,31 @@ export async function retryPrefetchJob(
     maxAttempts: maxRetries,
     delayMs: totalDelay,
     errorCode,
+    traceId,
+    correlationId,
+    stage,
   });
+  incrementMetric("scheduled");
+  incrementMapMetric(retryMetrics.byStage, stage);
+  if (errorCode) incrementMapMetric(retryMetrics.byErrorCode, errorCode);
 
   // Schedule retry with delay
   setTimeout(() => {
+    incrementMetric("executed");
     console.log('[Retry][Executing]', {
       batchId,
       taskId,
       userId,
       skillType,
       attempt: currentRetryCount + 1,
+      traceId,
+      correlationId,
+      stage,
     });
 
     prefetchFn(taskId, userId).catch((err) => {
+      incrementMetric("failed");
+      if (err?.code) incrementMapMetric(retryMetrics.byErrorCode, String(err.code));
       console.error('[Retry][Failed]', {
         batchId,
         taskId,
@@ -82,6 +128,9 @@ export async function retryPrefetchJob(
         attempt: currentRetryCount + 1,
         error: err?.message,
         errorCode: err?.code,
+        traceId,
+        correlationId,
+        stage,
       });
     });
   }, totalDelay);
@@ -124,4 +173,26 @@ export function getRetryDelay(attemptCount: number): number {
  */
 export function getTotalRetryTime(): number {
   return PREFETCH_RETRY_DELAYS.reduce((sum, delay) => sum + delay, 0);
+}
+
+export function getPrefetchRetryMetricsSnapshot() {
+  return {
+    scheduled: retryMetrics.scheduled,
+    executed: retryMetrics.executed,
+    failed: retryMetrics.failed,
+    exhausted: retryMetrics.exhausted,
+    byErrorCode: { ...retryMetrics.byErrorCode },
+    byStage: { ...retryMetrics.byStage },
+    updatedAt: retryMetrics.updatedAt,
+  };
+}
+
+export function resetPrefetchRetryMetrics() {
+  retryMetrics.scheduled = 0;
+  retryMetrics.executed = 0;
+  retryMetrics.failed = 0;
+  retryMetrics.exhausted = 0;
+  retryMetrics.byErrorCode = {};
+  retryMetrics.byStage = {};
+  retryMetrics.updatedAt = new Date().toISOString();
 }

@@ -1,7 +1,24 @@
 import OpenAI from "openai";
 import { onboardingSchema, type TaskProgress, type Question, type QuestionOption } from "@shared/schema";
+import type { ListeningSectionBlueprint } from "@shared/listening";
 import { normalizeAccent } from "./utils/audio.ts";
 import type { z } from "zod";
+import {
+  createTelemetryContext,
+  finishListeningStageSpan,
+  startListeningStageSpan,
+} from "./services/listeningObservability";
+import {
+  buildLegacyListeningScriptUserPrompt,
+  LEGACY_LISTENING_SCRIPT_SYSTEM_PROMPT_TEMPLATE,
+  LISTENING_ADVISOR_SYSTEM_PROMPT_TEMPLATE,
+  LISTENING_QUESTION_SYSTEM_PROMPT_TEMPLATE,
+} from "./services/listeningPromptTemplates";
+import {
+  assertPromptVersionApprovedForProduction,
+  resolvePromptTemplateForExecution,
+} from "./services/listeningPromptRegistry";
+import { isPrivacySafeLogMode, redactSensitive } from "./utils/privacy";
 
 // Debug types for investigation
 type DebugSlice = { head: string; tail: string; length: number };
@@ -14,8 +31,20 @@ const sliceForDebug = (s: string, n = 300): DebugSlice => ({
 const isProduction = process.env.NODE_ENV === "production";
 const verboseLog = (...args: any[]) => {
   if (!isProduction) {
+    if (isPrivacySafeLogMode()) {
+      console.log(...args.map((arg) => redactSensitive(arg)));
+      return;
+    }
     console.log(...args);
   }
+};
+
+const safeErrorLog = (label: string, payload: unknown) => {
+  if (isPrivacySafeLogMode()) {
+    console.error(label, redactSensitive(payload));
+    return;
+  }
+  console.error(label, payload);
 };
 
 interface PlanGenDebug {
@@ -31,9 +60,21 @@ interface PlanGenDebug {
   parseError?: { name: string; message: string; pos?: number; around?: string };
 }
 
+// Keep module imports test-safe: only require a real key in production.
+const resolvedOpenAiApiKey =
+  process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.trim().length > 0
+    ? process.env.OPENAI_API_KEY.trim()
+    : process.env.NODE_ENV === "production"
+      ? ""
+      : "test-openai-key";
+
+if (process.env.NODE_ENV === "production" && !resolvedOpenAiApiKey) {
+  throw new Error("OPENAI_API_KEY is required in production");
+}
+
 // Initialize OpenAI client
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+  apiKey: resolvedOpenAiApiKey,
 });
 
 // Type for the onboarding data
@@ -528,6 +569,12 @@ export async function generateQuestionsFromScript(
 ): Promise<{
   success: boolean;
   questions?: Question[];
+  prompt?: {
+    prompt_id: string;
+    version: string;
+    prompt_registry_id: string;
+    model_id: string;
+  };
   error?: string;
 }> {
   try {
@@ -546,31 +593,22 @@ export async function generateQuestionsFromScript(
       };
     }
 
+    const promptResolved = await resolvePromptTemplateForExecution({
+      promptId: "listening.question.generation",
+      userId: "question-generator",
+      sectionId: taskTitle,
+    });
+    await assertPromptVersionApprovedForProduction({
+      promptId: promptResolved.selected.prompt_id,
+      version: promptResolved.selected.version,
+    });
+    const templatePrompt = (promptResolved.selected.template || LISTENING_QUESTION_SYSTEM_PROMPT_TEMPLATE).replace(
+      "{{difficulty}}",
+      difficulty,
+    );
+
     // Create the system prompt for IELTS question generation
-    const systemPrompt = `You are an expert IELTS Listening tutor. Generate exactly 10 multiple-choice questions based on the provided listening script.
-
-Requirements:
-- Test main ideas, specific details, inference, speaker attitude, and vocabulary-in-context
-- Exactly 10 questions
-- Each question must have exactly 4 options (A, B, C, D)
-- Include realistic distractors
-- Provide the correct answer key and a clear explanation for each
-- Add a \"tags\" array with 1-3 values per question. Tags must be chosen from: ["numbers","dates","maps","directions","synonyms","vocabulary","detail","inference","attitude","general"]
-- Difficulty appropriate for ${difficulty}
-
-Respond with JSON only in this exact format:
-{
-  "questions": [
-    {
-      "id": "q1",
-      "question": "What is the main topic discussed in the audio?",
-      "options": ["Option A", "Option B", "Option C", "Option D"],
-      "correctAnswer": "A",
-      "explanation": "The correct answer is A because..."
-    }
-  ]
-}
-No extra text.`;
+    const systemPrompt = templatePrompt;
 
     const userPrompt = `Task: ${taskTitle}
 
@@ -654,12 +692,20 @@ Generate exactly 10 IELTS listening comprehension questions for this script. Eac
 
       return {
         success: true,
-        questions: validatedQuestions
+        questions: validatedQuestions,
+        prompt: {
+          prompt_id: promptResolved.selected.prompt_id,
+          version: promptResolved.selected.version,
+          prompt_registry_id: `${promptResolved.selected.prompt_id}@${promptResolved.selected.version}`,
+          model_id: promptResolved.selected.model_id,
+        },
       };
 
     } catch (parseError) {
       console.error("[Question Generation] Failed to parse JSON response:", parseError);
-      console.error("[Question Generation] Raw response:", responseContent);
+      safeErrorLog("[Question Generation] Parse failure payload", {
+        responseLength: responseContent.length,
+      });
       
       return {
         success: false,
@@ -680,6 +726,23 @@ Generate exactly 10 IELTS listening comprehension questions for this script. Eac
 export async function generateListeningStudyPlan(
   data: WeeklyPlanRequestData,
 ): Promise<ListeningStudyPlan | { success: false; reason: string; details?: any }> {
+  const weekRef = String(data.weekNumber ?? 1);
+  const planSpan = startListeningStageSpan({
+    stage: "plan_selected",
+    context: createTelemetryContext({
+      traceId: `trc_plan_${weekRef}`,
+      requestId: `req_plan_${weekRef}`,
+      userId: null,
+      weeklyPlanId: weekRef,
+      sessionId: null,
+      sectionId: null,
+      partId: null,
+      agentName: "tutor_agent",
+    }),
+  });
+  let planSuccess = false;
+  let planActivities = 0;
+  let planErrorClass: string | null = null;
   try {
     // Extract user's preferences for prompt
     const {
@@ -817,8 +880,8 @@ Rules:
     verboseLog("OpenAI Prompt Details:");
     verboseLog("- System Prompt Length:", systemPrompt.length);
     verboseLog("- User Data Length:", formattedDataString.length);
-    verboseLog("- API Key Check:", process.env.OPENAI_API_KEY ? "Present" : "Missing");
-    verboseLog("- Formatted User Data:", JSON.stringify(formattedUserData, null, 2));
+    verboseLog("- API key configured:", Boolean(process.env.OPENAI_API_KEY));
+    verboseLog("- Formatted User Data:", formattedUserData);
 
     // Call OpenAI API with better error handling
     try {
@@ -1059,6 +1122,8 @@ Rules:
           weekFocus: planData.weekFocus || defaultWeekFocus,
           plan: planArray,
         };
+        planSuccess = true;
+        planActivities = planArray.length;
 
         verboseLog(
           "Successfully processed listening study plan with",
@@ -1067,19 +1132,23 @@ Rules:
         );
         return studyPlan;
       } catch (parseError) {
+        planErrorClass = "PLAN_PARSE_ERROR";
         console.error("Error parsing OpenAI JSON response:", parseError);
-        console.error("Raw response:", planText);
+        safeErrorLog("Plan generation parse failure payload", {
+          responseLength: planText.length,
+        });
         return {
           success: false,
           reason: "Failed to parse the generated listening study plan",
           details: {
             error: parseError,
-            rawResponse: planText
+            rawResponseLength: planText.length,
           }
         };
       }
     } catch (openaiError: any) {
-      console.error("OpenAI API Error:", openaiError);
+      planErrorClass = "PLAN_OPENAI_ERROR";
+      safeErrorLog("OpenAI API Error", openaiError);
       // Detailed OpenAI error logging
       const errorDetails = {
         message: openaiError.message,
@@ -1087,10 +1156,9 @@ Rules:
         code: openaiError.code,
         statusCode: openaiError.status,
         responseData: openaiError.response?.data,
-        stack: openaiError.stack
       };
       
-      console.error("OpenAI Error Details:", JSON.stringify(errorDetails, null, 2));
+      safeErrorLog("OpenAI Error Details", errorDetails);
       
       return {
         success: false,
@@ -1099,12 +1167,22 @@ Rules:
       };
     }
   } catch (generalError) {
+    planErrorClass = "PLAN_UNKNOWN_ERROR";
     console.error("General error in generateListeningStudyPlan:", generalError);
     return {
       success: false,
       reason: "Unexpected error while generating listening study plan",
       details: generalError
     };
+  } finally {
+    await finishListeningStageSpan(planSpan, {
+      success: planSuccess,
+      errorClass: planSuccess ? null : planErrorClass ?? "PLAN_GENERATION_FAILED",
+      metadata: {
+        activities: planActivities,
+        week: weekRef,
+      },
+    });
   }
 }
 
@@ -1116,29 +1194,7 @@ Rules:
  * @returns Generated script content
  */
 // IELTS Script System Prompt for dynamic, part-free titles
-export const IELTS_SCRIPT_SYSTEM_PROMPT = `
-You are an IELTS Listening tutor. Generate a realistic script strictly aligned with IELTS listening contexts.
-Return JSON ONLY in this exact shape:
-
-{
-  "script": "Full script text.",
-  "scriptType": "dialogue" | "monologue",
-  "topicDomain": "short domain label, e.g. 'Office', 'Service Call', 'Museum', 'Classroom', 'Academic Lecture'",
-  "contextLabel": "1–3 word noun phrase for display (title base). Reuse topicDomain if appropriate.",
-  "scenarioOverview": "1–2 sentences summarizing the situation and goal",
-  "accent": "British" | "American" | "Canadian" | "Australian" | "NewZealand",
-  "estimatedDurationSec": number,
-  "ieltsPart": 1 | 2 | 3 | 4
-}
-
-Rules:
-- The scriptType MUST match the provided activityType for this session.
-- The topicDomain/context should reflect the provided scenario.
-- Map IELTS parts appropriately (1 & 3 = dialogues; 2 & 4 = monologues).
-- Target spoken length 6 minutes (≈360 seconds). Aim for 330–390 seconds spoken pace.
-
-No commentary. JSON only.
-`;
+export const IELTS_SCRIPT_SYSTEM_PROMPT = LEGACY_LISTENING_SCRIPT_SYSTEM_PROMPT_TEMPLATE;
 
 export const LISTENING_SESSION_PACKAGE_SYSTEM = `
 You are an IELTS Listening tutor. Generate a package of listening practice items for a single session.
@@ -1330,7 +1386,9 @@ export async function generateListeningSessionPackage(
     try {
       parsed = JSON.parse(content);
     } catch (error) {
-      console.error("[Session Package] Failed to parse JSON response", { content });
+      safeErrorLog("[Session Package] Failed to parse JSON response", {
+        responseLength: content.length,
+      });
       throw new Error("Failed to parse session package response");
     }
 
@@ -1492,6 +1550,12 @@ export async function generateAdvisorFeedback(params: {
   scoreText?: string;
   summary?: string;
   actions?: string[];
+  prompt?: {
+    prompt_id: string;
+    version: string;
+    prompt_registry_id: string;
+    model_id: string;
+  };
   error?: string;
 }> {
   try {
@@ -1502,21 +1566,18 @@ export async function generateAdvisorFeedback(params: {
     const total = questions.length;
     const scoreText = `${correct}/${total}`;
 
+    const promptResolved = await resolvePromptTemplateForExecution({
+      promptId: "listening.coaching.advisor",
+      userId: "coach-advisor",
+      sectionId: `audio-${audioIndex + 1}`,
+    });
+    await assertPromptVersionApprovedForProduction({
+      promptId: promptResolved.selected.prompt_id,
+      version: promptResolved.selected.version,
+    });
+
     // Build the system prompt (concise, actionable)
-    const systemPrompt = `You are an IELTS Listening study advisor. Provide concise, actionable feedback strictly for the single audio just completed.
-
-Requirements:
-- Reflect the learner's actual answers using question numbers (e.g., Q3, Q5).
-- Identify concrete error patterns (misheard numbers, distractors, synonym traps, multi-speaker attribution).
-- Output exactly three action-focused tips (imperatives).
-- 120–180 words max. No fluff. No generic platitudes.
-- Do NOT discuss future audios or leak answers for other items.
-
-Respond with JSON only:
-{
-  "summary": "one compact paragraph grounded in the user's responses...",
-  "actions": ["Tip 1", "Tip 2", "Tip 3"]
-}`;
+    const systemPrompt = promptResolved.selected.template || LISTENING_ADVISOR_SYSTEM_PROMPT_TEMPLATE;
 
     // Build user prompt with question details
     const incorrectQuestions = questions
@@ -1596,7 +1657,13 @@ Provide:
         success: true,
         scoreText,
         summary: parsed.summary,
-        actions: parsed.actions.slice(0, 3) // Ensure exactly 3
+        actions: parsed.actions.slice(0, 3), // Ensure exactly 3
+        prompt: {
+          prompt_id: promptResolved.selected.prompt_id,
+          version: promptResolved.selected.version,
+          prompt_registry_id: `${promptResolved.selected.prompt_id}@${promptResolved.selected.version}`,
+          model_id: promptResolved.selected.model_id,
+        },
       };
 
     } catch (parseError) {
@@ -1631,6 +1698,12 @@ export async function generateListeningScriptForTask(
   scenarioOverview?: string;
   estimatedDurationSec?: number;
   difficulty?: string;
+  prompt?: {
+    prompt_id: string;
+    version: string;
+    prompt_registry_id: string;
+    model_id: string;
+  };
   error?: string;
 }> {
   try {
@@ -1677,22 +1750,24 @@ export async function generateListeningScriptForTask(
           : "British";
     const accent = normalizeAccent(accentRaw);
 
-    // Create user prompt with task details
-    const userPrompt = `Create an IELTS listening script for: "${task.taskTitle}".
+    const promptResolved = await resolvePromptTemplateForExecution({
+      promptId: "listening.script.legacy",
+      userId: task.userId,
+      sectionId: task.id,
+    });
+    await assertPromptVersionApprovedForProduction({
+      promptId: promptResolved.selected.prompt_id,
+      version: promptResolved.selected.version,
+    });
 
-Inputs:
-- activityType: ${activityType}  // "dialogue" | "monologue"
-- scenario: ${scenario}          // short label, e.g. "University Lecture", "Customer Support Call"
-- targetBand: ${targetBand}      // learner goal
-- userLevel: ${userLevel}        // current self-assessed level
-- accent: ${accent}              // optional; can be set by plan if provided
-
-Requirements:
-- Pick ONE IELTS Listening Part format consistent with activityType (1 or 3 for dialogue; 2 or 4 for monologue)
-- Topic domain must align with the scenario
-- Language level appropriate for Band ${targetBand} learners (current level Band ${userLevel})
-- Target spoken duration approximately 6 minutes (aim for 900–1,050 words, yielding 330–390 seconds spoken pace)
-- Return JSON only per the system schema`;
+    const userPrompt = buildLegacyListeningScriptUserPrompt({
+      taskTitle: task.taskTitle,
+      activityType,
+      scenario,
+      targetBand,
+      userLevel,
+      accent,
+    });
 
     verboseLog(`[Script Generation] Generating IELTS script for "${task.taskTitle}":`, {
       userLevel,
@@ -1708,7 +1783,7 @@ Requirements:
       messages: [
         {
           role: "system",
-          content: IELTS_SCRIPT_SYSTEM_PROMPT
+          content: promptResolved.selected.template || IELTS_SCRIPT_SYSTEM_PROMPT
         },
         {
           role: "user",
@@ -1764,12 +1839,20 @@ Requirements:
         contextLabel: parsedResponse.contextLabel,
         scenarioOverview: parsedResponse.scenarioOverview,
         estimatedDurationSec,
-        difficulty: `Band ${targetBand}` // Maintain for compatibility
+        difficulty: `Band ${targetBand}`, // Maintain for compatibility
+        prompt: {
+          prompt_id: promptResolved.selected.prompt_id,
+          version: promptResolved.selected.version,
+          prompt_registry_id: `${promptResolved.selected.prompt_id}@${promptResolved.selected.version}`,
+          model_id: promptResolved.selected.model_id,
+        },
       };
 
     } catch (parseError) {
       console.error("[Script Generation] Failed to parse JSON response:", parseError);
-      console.error("[Script Generation] Raw response:", responseContent);
+      safeErrorLog("[Script Generation] Parse failure payload", {
+        responseLength: responseContent.length,
+      });
       
       return {
         success: false,
@@ -1782,6 +1865,105 @@ Requirements:
     return {
       success: false,
       error: error.message || "Failed to generate script"
+    };
+  }
+}
+
+export async function generateListeningSegmentFromBlueprint(params: {
+  blueprint: ListeningSectionBlueprint;
+  segmentNo: 1 | 2 | 3;
+  targetDurationSeconds: number;
+  userLevel: number;
+  targetBand: number;
+  accent: string;
+  promptTemplate: string;
+}): Promise<{
+  success: boolean;
+  transcript?: string;
+  predictedDurationSec?: number;
+  difficulty?: string;
+  difficultyConfidence?: number;
+  error?: string;
+}> {
+  try {
+    const accent = normalizeAccent(params.accent);
+    const blueprintContext = JSON.stringify({
+      section_id: params.blueprint.section_id,
+      section_no: params.blueprint.section_no,
+      context_type: params.blueprint.context_type,
+      entities: params.blueprint.entities,
+      timeline: params.blueprint.timeline,
+      facts: params.blueprint.facts,
+      topic_domain: params.blueprint.topic_domain,
+      context_label: params.blueprint.context_label,
+      scenario_overview: params.blueprint.scenario_overview,
+      script_type: params.blueprint.script_type,
+    });
+
+    const userPrompt = params.promptTemplate
+      .replace("{{blueprint_context}}", blueprintContext)
+      .replace("{{segment_no}}", String(params.segmentNo))
+      .replace("{{target_duration_seconds}}", String(params.targetDurationSeconds))
+      .replace("{{user_level}}", String(params.userLevel))
+      .replace("{{target_band}}", String(params.targetBand))
+      .replace("{{accent}}", accent);
+
+    const response = await openai.chat.completions.create({
+      model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: "You generate structured IELTS listening segment JSON. Output JSON only.",
+        },
+        {
+          role: "user",
+          content: userPrompt,
+        },
+      ],
+      temperature: 0.4,
+      max_tokens: 1800,
+      response_format: { type: "json_object" },
+    });
+
+    const content = response.choices[0]?.message?.content?.trim();
+    if (!content) {
+      return {
+        success: false,
+        error: "OPENAI_EMPTY_RESPONSE",
+      };
+    }
+
+    const parsed = JSON.parse(content);
+    const transcript = typeof parsed?.transcript === "string" ? parsed.transcript.trim() : "";
+    if (!transcript) {
+      return {
+        success: false,
+        error: "SEGMENT_EMPTY_TRANSCRIPT",
+      };
+    }
+
+    const predictedRaw =
+      typeof parsed?.predictedDurationSec === "number" ? parsed.predictedDurationSec : params.targetDurationSeconds;
+    const predictedDurationSec = Math.max(60, Math.round(predictedRaw));
+    const difficulty =
+      typeof parsed?.difficulty === "string" && parsed.difficulty.trim().length > 0
+        ? parsed.difficulty
+        : `Band ${params.targetBand}`;
+    const difficultyConfidenceRaw =
+      typeof parsed?.difficultyConfidence === "number" ? parsed.difficultyConfidence : 0.75;
+    const difficultyConfidence = Math.max(0, Math.min(1, difficultyConfidenceRaw));
+
+    return {
+      success: true,
+      transcript,
+      predictedDurationSec,
+      difficulty,
+      difficultyConfidence,
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: error?.message ?? "SEGMENT_GENERATION_FAILED",
     };
   }
 }

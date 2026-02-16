@@ -22,6 +22,12 @@ export interface WeeklyPlanTask {
   progressId?: string | null;
   assignedDate?: string;
   durationMinutes?: number;
+  performanceCoachStatus?: {
+    recommendationAdopted?: boolean;
+    trendImpact?: "up" | "down" | "flat" | null;
+    loopBreakMetric?: string | null;
+    sourceAnalysisId?: string | null;
+  } | null;
 }
 
 export interface WeeklyPlan {

@@ -119,7 +119,8 @@ export async function createFollowUpListeningTask(opts: {
     topicDomain: currentTask.topicDomain || 'general',
     scenarioOverview: currentTask.scenarioOverview || ''
   });
-  const segments = ensureListeningSegments(currentTask.progressData?.segments as any, sessionMinutes, {
+  const currentProgressData = (currentTask.progressData ?? {}) as Record<string, any>;
+  const segments = ensureListeningSegments(currentProgressData.segments as any, sessionMinutes, {
     baseTitle: title,
     accent: currentTask.accent,
   });

@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { getFreshWithAuth } from '@/lib/apiClient';
 import { useFirebaseAuthContext } from '@/contexts/FirebaseAuthContext';
+import type { ListeningRendererRoot } from '@shared/listening';
 
 // Debug toggle
 const DEBUG = Boolean((window as any).__DEBUG__);
@@ -15,6 +16,8 @@ type UiQuestion = {
   correctAnswer?: string;
   explanation?: string;
   hint?: string;
+  groupId?: string | null;
+  optionOrder?: string[];
 };
 
 export type TaskContent = {
@@ -25,9 +28,23 @@ export type TaskContent = {
   scriptText: string | null;
   audioUrl: string | null;
   questions: UiQuestion[];
+  rendererPayload?: ListeningRendererRoot | null;
+  contractMode?: "legacy" | "dual";
   accent?: string | null;
   duration?: number | 0;
   replayLimit?: number | 3;
+  manifest?: {
+    audio_assets?: Array<{
+      segment_no: number;
+      accent: string;
+      voice_id?: string | null;
+      url: string;
+      duration_seconds: number;
+      url_mode?: "public" | "signed";
+      url_expires_at?: string | null;
+    }>;
+    [key: string]: any;
+  } | null;
 };
 
 type ApiOk = {
@@ -155,7 +172,10 @@ export function useTaskContent(
           const hint =
             typeof q?.hint === 'string' ? q.hint : undefined;
 
-          return { id, text, type, options, correctAnswer, explanation, hint };
+          const groupId = typeof q?.groupId === 'string' ? q.groupId : null;
+          const optionOrder = Array.isArray(q?.optionOrder) ? q.optionOrder.filter((id: any) => typeof id === 'string') : undefined;
+
+          return { id, text, type, options, correctAnswer, explanation, hint, groupId, optionOrder };
         })
         .filter(Boolean) as UiQuestion[];
 
@@ -176,9 +196,12 @@ export function useTaskContent(
           scriptText: tc.scriptText ?? null,
           audioUrl: tc.audioUrl ?? null,
           questions: normalizedQuestions,
+          rendererPayload: tc.questionContract?.renderer ?? null,
+          contractMode: tc.questionContract?.mode === 'dual' ? 'dual' : 'legacy',
           accent: tc.accent ?? 'British',
           duration: typeof tc.duration === 'number' ? tc.duration : 0,
           replayLimit: typeof tc.replayLimit === 'number' ? tc.replayLimit : 3,
+          manifest: data?.manifest ?? null,
         },
         // Readiness metadata
         ready: data?.ready ?? true, // default to true for backward compatibility

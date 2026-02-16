@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { cn } from '../../lib/utils';
 import { useWeeklyPlan } from '../../hooks/useWeeklyPlan';
@@ -14,19 +14,58 @@ import { ListeningTask } from './ListeningTaskCard';
 import { addDays } from 'date-fns';
 import { getQueryFn } from '../../lib/queryClient';
 import { useToast } from '../../hooks/use-toast';
-import { useTaskProgress } from '../../hooks/useTaskProgress';
+import { useTaskProgress, seedSessionStart, readSessionStart } from '../../hooks/useTaskProgress';
+import { useFirebaseAuthContext } from '@/contexts/FirebaseAuthContext';
+import { useAuth } from '@/hooks/useAuth';
+import { DEFAULT_SESSION_MINUTES, SESSION_START_KEY } from '@shared/constants';
+import { postFreshWithAuth } from '@/lib/apiClient';
+
+function clearSessionStart(key: string) {
+  if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
+    return;
+  }
+  window.localStorage.removeItem(key);
+}
 
 interface ListeningWeeklyPlanProps {
   weekNumber: number;
   className?: string;
 }
 
-export default function ListeningWeeklyPlan({ weekNumber, className }: ListeningWeeklyPlanProps) {
+function ListeningWeeklyPlan({ weekNumber, className }: ListeningWeeklyPlanProps) {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const [localProgressOverrides, setLocalProgressOverrides] = useState<Record<string, string>>({});
   const [startingTaskKey, setStartingTaskKey] = useState<string | null>(null);
   const { startTask: startTaskProgress } = useTaskProgress({ enabled: false });
+  const { user } = useAuth();
+  const { currentUser, getToken, loading: authLoading, authReady } = useFirebaseAuthContext();
+
+
+  // Prefer server user id; fallback to Firebase UID to avoid CTA dead-ends while cache warms.
+  const userId = user?.id ?? currentUser?.uid ?? null;
+
+  const [todayYmd] = useState(() => new Date().toISOString().split('T')[0]);
+
+  // Always define this once; earlier crash showed missing var.
+  const canUseStorage = typeof window !== 'undefined' && !!window.localStorage;
+  const [timeRefreshCounter, setTimeRefreshCounter] = useState(0);
+
+  // keep the 15s label refresh, but don't trigger unmounts/remounts
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      return;
+    }
+    const bump = () => setTimeRefreshCounter((prev) => prev + 1);
+    const intervalId = window.setInterval(bump, 15000);
+    window.addEventListener('focus', bump);
+    document.addEventListener('visibilitychange', bump);
+    return () => {
+      window.removeEventListener('focus', bump);
+      document.removeEventListener('visibilitychange', bump);
+      window.clearInterval(intervalId);
+    };
+  }, []);
 
   const {
     data: weeklyPlan,
@@ -156,6 +195,19 @@ export default function ListeningWeeklyPlan({ weekNumber, className }: Listening
         'British';
       const resolvedVoiceId = firstSegmentMeta?.voiceId || undefined;
 
+      const progressDurationMinutes =
+        typeof linkedProgress?.duration === 'number' && linkedProgress.duration > 0
+          ? linkedProgress.duration
+          : undefined;
+      const taskDurationMinutes =
+        typeof task.durationMinutes === 'number' && task.durationMinutes > 0
+          ? task.durationMinutes
+          : undefined;
+      const resolvedDurationMinutes =
+        progressDurationMinutes ??
+        taskDurationMinutes ??
+        DEFAULT_SESSION_MINUTES;
+
       const listeningTask: ListeningTask = {
         id: fallbackId,
         progressId,
@@ -167,9 +219,8 @@ export default function ListeningWeeklyPlan({ weekNumber, className }: Listening
         ieltsPart: task.ieltsPart,
         accent: resolvedAccent,
         voiceId: resolvedVoiceId,
-        duration: (typeof task.durationMinutes === 'number' && task.durationMinutes > 0)
-          ? `${task.durationMinutes} min`
-          : (typeof task.duration === 'string' ? task.duration : '30 min'),
+        duration: `${resolvedDurationMinutes} min`,
+        durationMinutes: resolvedDurationMinutes,
         description: task.description || '',
         status,
         sessionState,
@@ -180,7 +231,54 @@ export default function ListeningWeeklyPlan({ weekNumber, className }: Listening
         isStarting: startingTaskKey === fallbackId,
         assignedDate: typeof task.assignedDate === 'string' ? task.assignedDate : undefined,
         sequenceNumber: typeof task.sequenceNumber === 'number' ? task.sequenceNumber : undefined,
+        performanceCoachStatus: (() => {
+          const statusFromPlan = task.performanceCoachStatus ?? null;
+          const statusFromProgress = linkedProgress?.progressData?.performanceCoach?.latest?.closed_loop ?? null;
+          if (!statusFromPlan && !statusFromProgress) {
+            return null;
+          }
+          return {
+            recommendationAdopted:
+              Boolean(statusFromPlan?.recommendationAdopted) ||
+              Boolean(statusFromProgress?.recommendation_adopted),
+            trendImpact:
+              statusFromPlan?.trendImpact ??
+              statusFromProgress?.trend_impact ??
+              null,
+            loopBreakMetric:
+              statusFromPlan?.loopBreakMetric ??
+              statusFromProgress?.loop_break_metric ??
+              null,
+            sourceAnalysisId:
+              statusFromPlan?.sourceAnalysisId ??
+              statusFromProgress?.source_analysis_id ??
+              null,
+          };
+        })(),
       };
+
+      if (canUseStorage && userId && progressId && resolvedDurationMinutes > 0) {
+        const sessionKey = SESSION_START_KEY(userId, todayYmd, progressId);
+        const storedStart = readSessionStart(sessionKey);
+        if (storedStart) {
+          const parsedStart = Number(storedStart);
+          if (Number.isFinite(parsedStart) && parsedStart > 0) {
+            const totalMs = resolvedDurationMinutes * 60 * 1000;
+            const remainingMs = Math.max(0, totalMs - (Date.now() - parsedStart));
+            if (remainingMs <= 0) {
+              clearSessionStart(sessionKey);
+            } else {
+              listeningTask.sessionState = {
+                status: 'paused',
+                remainingMs,
+                currentAudioIndex: 0,
+              };
+            }
+          } else {
+            clearSessionStart(sessionKey);
+          }
+        }
+      }
 
       dayGroups[dayNumber].push(listeningTask);
     });
@@ -197,7 +295,18 @@ export default function ListeningWeeklyPlan({ weekNumber, className }: Listening
       isAvailable: isDayAvailable(index),
       tasks: dayGroups[index + 1] || []
     }));
-  }, [weeklyPlan, schedule, progressLookup, localProgressOverrides, startingTaskKey, weekNumber]);
+  }, [
+    weeklyPlan,
+    schedule,
+    progressLookup,
+    localProgressOverrides,
+    startingTaskKey,
+    weekNumber,
+    userId,
+    todayYmd,
+    timeRefreshCounter,
+    canUseStorage,
+  ]);
 
   // Filter to only show available days (or all if testing)
   const filteredDays = useMemo(() => {
@@ -215,6 +324,7 @@ export default function ListeningWeeklyPlan({ weekNumber, className }: Listening
 
     try {
       setStartingTaskKey(task.localKey);
+      const preToken = await getToken();
       const payload = await startTaskProgress({
         weeklyPlanId: task.weeklyPlanId,
         weekNumber: task.weekNumber,
@@ -235,9 +345,17 @@ export default function ListeningWeeklyPlan({ weekNumber, className }: Listening
       }));
 
       await refetchProgress();
+
+      if (userId) {
+        const seeded = seedSessionStart(progressId, userId, todayYmd);
+        if (seeded) {
+        }
+      }
+
+      const postToken = await getToken();
+
       return progressId;
     } catch (error: any) {
-      console.error('[ListeningWeeklyPlan] Failed to start task', error);
       toast({
         title: 'Unable to start practice',
         description: error?.message || 'Please try again.',
@@ -250,16 +368,64 @@ export default function ListeningWeeklyPlan({ weekNumber, className }: Listening
   };
 
   const handleTaskClick = async (task: ListeningTask) => {
-    if (startingTaskKey && startingTaskKey === task.localKey) {
+    if (startingTaskKey && startingTaskKey === task.localKey) return;
+    if (authLoading || !authReady) return;
+
+    if (!canUseStorage) {
+      toast({
+        title: "Browser storage unavailable",
+        description: "Please use a modern browser to continue.",
+        variant: "destructive",
+      });
       return;
     }
 
+    // If server user id hasn’t landed yet, try a single forced refresh to warm token + user cache.
+    let effectiveUserId = user?.id ?? currentUser?.uid ?? null;
+    if (!effectiveUserId) {
+      try {
+        const t = await getToken(true);
+      } catch (e) {
+      }
+      // Re-read after refresh
+      effectiveUserId = user?.id ?? currentUser?.uid ?? null;
+    }
+
+    // Start (even if userId still null) — withAuthRetry already handles auth; we’ll seed key later if needed.
     const existingId = task.progressId ?? localProgressOverrides[task.localKey] ?? null;
     const progressId = existingId ?? (await ensureTaskProgress(task));
 
     if (!progressId) {
       return;
     }
+
+    void postFreshWithAuth(
+      "/api/listening/readiness/boost",
+      {
+        taskProgressId: progressId,
+        source: "dashboard_start_click",
+      },
+      getToken,
+    ).catch(() => undefined);
+
+    // Seed countdown if we have an identity; otherwise practice page will soft-fallback seed on first mount.
+    if (effectiveUserId) {
+      const sessionKey = SESSION_START_KEY(effectiveUserId, todayYmd, progressId);
+      const hasSessionKey = Boolean(readSessionStart(sessionKey));
+      if (!hasSessionKey) {
+        const seeded = seedSessionStart(progressId, effectiveUserId, todayYmd);
+        if (!seeded) {
+          toast({
+            title: "Unable to start session",
+            description: "Please try again from the dashboard.",
+            variant: "destructive",
+          });
+          return;
+        }
+      }
+    }
+
+    await getToken();
 
     const targetPath = `/practice/${encodeURIComponent(progressId)}?progressId=${encodeURIComponent(progressId)}&taskId=${encodeURIComponent(task.id)}`;
     setLocation(targetPath);
@@ -341,11 +507,12 @@ export default function ListeningWeeklyPlan({ weekNumber, className }: Listening
           <h2 className="text-lg md:text-xl font-semibold text-gray-900">
             Listening Study Plan
           </h2>
-          <Link href="/dashboard/calendar">
-            <a className="text-sm text-gray-600 hover:text-gray-900 flex items-center gap-1">
-              <span className="hidden sm:inline">View Calendar</span>
-              <ChevronRight className="h-4 w-4" />
-            </a>
+          <Link
+            href="/dashboard/calendar"
+            className="text-sm text-gray-600 hover:text-gray-900 flex items-center gap-1"
+          >
+            <span className="hidden sm:inline">View Calendar</span>
+            <ChevronRight className="h-4 w-4" />
           </Link>
         </div>
 
@@ -370,6 +537,7 @@ export default function ListeningWeeklyPlan({ weekNumber, className }: Listening
               tasks={day.tasks}
               isAvailable={day.isAvailable}
               onTaskClick={handleTaskClick}
+              ctaDisabled={authLoading || !authReady}
             />
           ))}
         </div>
@@ -377,3 +545,5 @@ export default function ListeningWeeklyPlan({ weekNumber, className }: Listening
     </Card>
   );
 }
+
+export default React.memo(ListeningWeeklyPlan);

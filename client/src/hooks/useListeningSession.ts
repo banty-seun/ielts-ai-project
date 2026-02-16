@@ -44,7 +44,14 @@ interface UseListeningSessionResult {
 
   // Auto-advance
   canAutoAdvance: boolean;
-  requestNextAudio: () => Promise<{ ok: boolean; audio?: any; reason?: string }>;
+  requestNextAudio: () => Promise<{
+    ok: boolean;
+    audio?: any;
+    progressId?: string;
+    phase?: string;
+    reason?: string;
+    startupGateMode?: string;
+  }>;
 
   // Error state
   error: string | null;
@@ -210,6 +217,45 @@ export function useListeningSession({
    */
   const requestNextAudio = useCallback(async () => {
     try {
+      const maxStatusPollAttempts = 4;
+      for (let attempt = 0; attempt < maxStatusPollAttempts; attempt += 1) {
+        try {
+          const statusResponse = await fetch(`/api/session/next-part-status/${encodeURIComponent(taskId)}`);
+          if (!statusResponse.ok) {
+            throw new Error(`Failed to load next-part status (${statusResponse.status})`);
+          }
+          const statusData = await statusResponse.json();
+
+          if (statusData?.status === 'ready' && statusData?.progressId) {
+            return {
+              ok: true,
+              progressId: statusData.progressId,
+              phase: statusData.phase,
+              startupGateMode: statusData.startup_gate_mode,
+            };
+          }
+
+          if (statusData?.status === 'none' && statusData?.final) {
+            return {
+              ok: false,
+              reason: 'final',
+              phase: statusData.phase,
+              startupGateMode: statusData.startup_gate_mode,
+            };
+          }
+
+          // Back off when next part is still warming/queued/error and try fallback create later.
+          if (statusData?.status === 'warming' || statusData?.status === 'queued' || statusData?.status === 'error') {
+            const delay = Math.min(12000, 1000 * (2 ** attempt));
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            continue;
+          }
+        } catch (_statusError) {
+          const delay = Math.min(12000, 1000 * (2 ** attempt));
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
+
       const response = await fetch('/api/session/next-listening-task', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -221,22 +267,39 @@ export function useListeningSession({
       });
 
       if (!response.ok) {
-        throw new Error('Failed to request next audio');
+        throw new Error('Failed to request next section');
       }
 
       const data = await response.json();
 
       if (data.ok && data.audio) {
-        // Add to prefetched audios
         setSessionState(prev => ({
           ...prev,
           prefetchedAudios: [...(prev.prefetchedAudios || []), data.audio],
         }));
-
-        return { ok: true, audio: data.audio };
+        return {
+          ok: true,
+          audio: data.audio,
+          phase: data.phase,
+          startupGateMode: data.startup_gate_mode,
+        };
       }
 
-      return { ok: false, reason: data.reason || 'Unknown error' };
+      if (data.ok && data.progressId) {
+        return {
+          ok: true,
+          progressId: data.progressId,
+          phase: data.phase,
+          startupGateMode: data.startup_gate_mode,
+        };
+      }
+
+      return {
+        ok: false,
+        reason: data.reason || 'Unknown error',
+        phase: data.phase,
+        startupGateMode: data.startup_gate_mode,
+      };
     } catch (err: any) {
       console.error('[useListeningSession] Request next audio error:', err);
       setError(err.message || 'Failed to request next audio');

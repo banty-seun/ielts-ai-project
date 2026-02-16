@@ -822,8 +822,7 @@ function SummaryStep() {
         console.log('Onboarding marked as completed in database:', onboardingResponse);
         
         // Invalidate query caches to force a refetch of updated data
-        queryClient.invalidateQueries({ queryKey: ['/api/auth/onboarding-status'] });
-        queryClient.invalidateQueries({ queryKey: ['/api/firebase/auth/onboarding-status'] });
+        queryClient.invalidateQueries({ queryKey: ['onboardingStatus'] });
         queryClient.invalidateQueries({ queryKey: [`/api/weekly-plan/`] });
         queryClient.invalidateQueries({ queryKey: [`/api/firebase/weekly-plan/`] });
       } catch (onboardingError) {
