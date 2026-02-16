@@ -10,6 +10,7 @@ interface DaySectionProps {
   isAvailable: boolean;
   onTaskClick?: (task: ListeningTask) => void;
   className?: string;
+  ctaDisabled?: boolean;
 }
 
 export default function DaySection({
@@ -18,7 +19,8 @@ export default function DaySection({
   tasks,
   isAvailable,
   onTaskClick,
-  className
+  className,
+  ctaDisabled = false,
 }: DaySectionProps) {
   const today = isToday(date);
 
@@ -115,6 +117,7 @@ export default function DaySection({
             key={task.id}
             task={task}
             onClick={() => onTaskClick?.(task)}
+            ctaDisabled={ctaDisabled}
           />
         ))}
       </div>

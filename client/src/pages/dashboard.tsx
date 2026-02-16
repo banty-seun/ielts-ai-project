@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { useAuth } from '../hooks/useAuth';
+import { useAuth } from '@/hooks/useAuth';
 import { useFirebaseAuthContext } from '../contexts/FirebaseAuthContext';
 import { useLocation } from 'wouter';
-import { ProtectedRoute } from '../components/ProtectedRoute';
 import { AuthStatus } from '../components/AuthStatus';
 import { postFreshWithAuth } from '../lib/apiClient';
 import { useOnboardingStatus } from '../hooks/useOnboardingStatus';
@@ -26,17 +25,28 @@ import { getCurrentWeekNumber, UserProfile } from '../lib/weekUtils';
 const dashboardTracker = createComponentTracker('Dashboard');
 
 export default function Dashboard() {
+  // Single auth query instance lives here
   const { user, isLoading } = useAuth();
   const { currentUser, loading: authLoading } = useFirebaseAuthContext();
   const { onboardingCompleted, preferences, isLoading: onboardingLoading } = useOnboardingStatus();
   const { data: onboardingData, isLoading: onboardingDataLoading } = useUserOnboarding();
-  const [, setLocation] = useLocation();
+  const [location, setLocation] = useLocation();
   const [currentWeek, setCurrentWeek] = useState(1);
   const [isGeneratingPlan, setIsGeneratingPlan] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [showAuthStatus, setShowAuthStatus] = useState(false);
   const [showMetrics, setShowMetrics] = useState(false);
   
+  useEffect(() => {
+    console.log(
+      `[DASH] useOnboardingStatus status=${onboardingLoading ? 'loading' : 'ready'}`,
+      {
+        onboardingCompleted,
+        hasPreferences: Boolean(preferences),
+      }
+    );
+  }, [onboardingLoading, onboardingCompleted, preferences]);
+
   // Log Firestore metrics when in development mode
   useEffect(() => {
     if (process.env.NODE_ENV === 'development') {
@@ -49,12 +59,13 @@ export default function Dashboard() {
     }
   }, []);
   
-  // Add guard to redirect if onboarding is incomplete
-  if (!onboardingLoading && !onboardingCompleted) {
-    console.log('[Dashboard] Onboarding incomplete, redirecting to /onboarding');
-    setLocation('/onboarding');
-    return null;
-  }
+  // Add guard to redirect if onboarding is incomplete without bouncing render
+  useEffect(() => {
+    if (!onboardingLoading && !onboardingCompleted && location !== '/onboarding') {
+      console.log('[Dashboard] Onboarding incomplete, redirecting to /onboarding');
+      setLocation('/onboarding');
+    }
+  }, [onboardingLoading, onboardingCompleted, location, setLocation]);
   
   // Get the getToken function from the Firebase context outside the function
   const { getToken } = useFirebaseAuthContext();
@@ -171,22 +182,21 @@ export default function Dashboard() {
   const currentBand = calculateCurrentBand();
 
   return (
-    <ProtectedRoute>
-      <div className="min-h-screen bg-white">
-        {/* Top Navigation */}
-        {/* Auth Status Modal */}
-        {showAuthStatus && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg shadow-lg p-6 max-w-md w-full mx-4">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-medium">Authentication Status</h3>
-                <button 
-                  onClick={() => setShowAuthStatus(false)} 
-                  className="p-1 rounded-full hover:bg-gray-100"
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
+    <div className="min-h-screen bg-white">
+      {/* Top Navigation */}
+      {/* Auth Status Modal */}
+      {showAuthStatus && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-lg p-6 max-w-md w-full mx-4">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-medium">Authentication Status</h3>
+              <button 
+                onClick={() => setShowAuthStatus(false)} 
+                className="p-1 rounded-full hover:bg-gray-100"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
               <AuthStatus />
               <div className="mt-4 flex justify-end">
                 <Button 
@@ -416,7 +426,9 @@ export default function Dashboard() {
                 )}
 
                 {/* New Listening-focused weekly plan */}
-                <ListeningWeeklyPlan weekNumber={currentWeek} />
+                <ListeningWeeklyPlan
+                  weekNumber={currentWeek}
+                />
               </div>
               
               {/* Quick Practice Strip */}
@@ -449,6 +461,5 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
-    </ProtectedRoute>
   );
 }

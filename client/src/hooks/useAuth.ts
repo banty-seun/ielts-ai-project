@@ -1,18 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
-import { AuthUser } from "@/types/auth";
+import { useAuthUser } from "./useAuthUser";
 
 export function useAuth() {
-  const { data: user, isLoading, error, refetch } = useQuery<AuthUser>({
-    queryKey: ["/api/auth/user"],
-    retry: false,
-    // Important: include credentials for auth cookies
-    meta: {
-      requestConfig: {
-        credentials: 'include'
-      }
-    },
-    refetchOnWindowFocus: false
-  });
+  const { data: user, isLoading, error, refetch, status } = useAuthUser();
 
   const loginRedirect = () => {
     window.location.href = "/api/login";
@@ -37,6 +26,7 @@ export function useAuth() {
   return {
     user,
     isLoading,
+    status,
     isAuthenticated: !!user,
     error,
     refetch,

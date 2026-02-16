@@ -10,6 +10,7 @@ process.env.PORT = process.env.PORT ?? "0";
 process.env.HOST = process.env.HOST ?? "127.0.0.1";
 process.env.REPLIT_DOMAINS = process.env.REPLIT_DOMAINS ?? "localhost";
 process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "test-openai-key";
+const probeEnvironment = process.env.LISTENING_PROBE_ENV ?? process.env.NODE_ENV ?? "development";
 
 const distRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
 const { prepareApp } = await import(distRoot);
@@ -57,8 +58,18 @@ async function invoke(spec) {
   resSocket.on("data", (chunk) => rawChunks.push(Buffer.from(chunk)));
 
   const finished = new Promise((resolve, reject) => {
-    res.on("finish", resolve);
-    res.on("error", reject);
+    const timeoutMs = Math.max(1_000, Number(spec.timeoutMs ?? 10_000));
+    const timeout = setTimeout(() => {
+      reject(new Error(`request_timeout:${spec.method} ${spec.path}`));
+    }, timeoutMs);
+    res.on("finish", () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+    res.on("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
   });
 
   if (payload) {
@@ -85,18 +96,23 @@ async function invoke(spec) {
   }
 
   let jsonSnippet = preview;
+  let parsedBody = null;
   try {
-    const parsed = JSON.parse(preview || "{}");
-    jsonSnippet = JSON.stringify(parsed).slice(0, 160);
+    parsedBody = JSON.parse(bodyText || "{}");
+    jsonSnippet = JSON.stringify(parsedBody).slice(0, 160);
   } catch {
     // keep text preview
   }
 
   const acceptable = spec.acceptableStatuses ?? [200];
-  const ok = acceptable.includes(res.statusCode) || res.statusCode < 500;
+  let ok = acceptable.includes(res.statusCode);
+  if (ok && typeof spec.validate === "function") {
+    ok = Boolean(spec.validate(parsedBody, res.statusCode));
+  }
 
   return {
     name: spec.name,
+    stage: spec.stage ?? "unknown",
     status: res.statusCode,
     ok,
     bodyPreview: jsonSnippet,
@@ -104,32 +120,51 @@ async function invoke(spec) {
 }
 
 const tests = [
-  { name: "health", method: "GET", path: "/health", acceptableStatuses: [200, 404] },
-  { name: "onboarding-status", method: "GET", path: "/api/firebase/auth/onboarding-status" },
+  { name: "health", stage: "platform", method: "GET", path: "/health", acceptableStatuses: [200, 404] },
   {
-    name: "plan-generate",
-    method: "POST",
-    path: "/api/plan/generate",
-    body: {
-      fullName: "Test User",
-      phoneNumber: "",
-      targetBandScore: 7,
-      testDate: null,
-      notDecided: true,
-      skillRatings: { listening: 5, reading: 5, writing: 5, speaking: 5 },
-      immigrationGoal: "study",
-      studyPreferences: {
-        dailyCommitment: "30mins",
-        schedule: "weekday",
-        style: "ai-guided",
-      },
-    },
+    name: "onboarding-status",
+    stage: "auth",
+    method: "GET",
+    path: "/api/firebase/auth/onboarding-status",
+    acceptableStatuses: [200, 401],
   },
   {
-    name: "next-listening-task",
+    name: "listening-tts-health",
+    stage: "audio_rendered",
+    method: "GET",
+    path: "/api/listening/tts/health",
+    acceptableStatuses: [200, 401, 503],
+  },
+  {
+    name: "listening-synthetic-probes",
+    stage: "question_generated",
     method: "POST",
-    path: "/api/session/next-listening-task",
-    body: { progressId: "test-progress", taskId: "test-task" },
+    path: "/api/listening/ops/probes/run",
+    acceptableStatuses: [200, 401],
+    validate: (payload, statusCode) =>
+      statusCode !== 200 ||
+      (Boolean(payload?.ok) &&
+        Array.isArray(payload?.report?.results) &&
+        payload.report.results.some((result) => result?.stage === "section_scheduled") &&
+        payload.report.results.some((result) => result?.stage === "script_generated") &&
+        payload.report.results.some((result) => result?.stage === "question_generated") &&
+        payload.report.results.some((result) => result?.stage === "audio_rendered") &&
+        payload.report.results.some((result) => result?.stage === "result_computed") &&
+        payload.report.results.some((result) => result?.stage === "coach_analyzed")),
+  },
+  {
+    name: "task-review",
+    stage: "result_computed",
+    method: "GET",
+    path: "/api/task-progress/test-progress/review",
+    acceptableStatuses: [200, 401, 404],
+  },
+  {
+    name: "performance-analysis",
+    stage: "coach_analyzed",
+    method: "GET",
+    path: "/api/session/performance-analysis/test-progress",
+    acceptableStatuses: [200, 401, 404],
   },
 ];
 
@@ -141,6 +176,7 @@ for (const spec of tests) {
   } catch (error) {
     results.push({
       name: spec.name,
+      stage: spec.stage ?? "unknown",
       status: 0,
       ok: false,
       bodyPreview: error instanceof Error ? error.message : String(error),
@@ -150,5 +186,16 @@ for (const spec of tests) {
 
 for (const result of results) {
   const label = result.ok ? "PASS" : "FAIL";
-  console.log(`${label} ${result.name} status=${result.status} body=${result.bodyPreview}`);
+  console.log(`${label} ${result.name} stage=${result.stage ?? "unknown"} status=${result.status} body=${result.bodyPreview}`);
+  if (!result.ok) {
+    console.error(
+      `[SyntheticProbe][Alert] stage=${result.stage ?? "unknown"} status=${result.status} name=${result.name} env=${probeEnvironment}`,
+    );
+  }
 }
+
+await new Promise((resolve) => {
+  server.close(() => resolve());
+});
+
+process.exit(results.some((result) => !result.ok) ? 1 : 0);

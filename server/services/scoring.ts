@@ -1,4 +1,10 @@
 import type { Question } from "@shared/schema";
+import { LISTENING_SCORING_TAGS, LISTENING_TAG_TAXONOMY_VERSION } from "@shared/listening";
+import {
+  createTelemetryContext,
+  finishListeningStageSpan,
+  startListeningStageSpan,
+} from "./listeningObservability";
 
 const LETTERS = ["A", "B", "C", "D"];
 
@@ -16,6 +22,7 @@ const TAG_LABELS: Record<string, string> = {
 };
 
 const FALLBACK_TAG = "general";
+const VALID_SCORING_TAGS = new Set<string>(LISTENING_SCORING_TAGS);
 
 export interface SegmentAnswer {
   questionId: string;
@@ -54,7 +61,18 @@ const resolveCorrectOptionId = (question: Question, options: { id: string; text:
 
 const deriveQuestionTags = (question: Question): string[] => {
   if (Array.isArray(question.tags) && question.tags.length) {
-    return question.tags.map((tag) => tag.toLowerCase());
+    const normalized = question.tags
+      .map((tag) => tag.toLowerCase())
+      .filter((tag) => VALID_SCORING_TAGS.has(tag));
+    if (normalized.length > 0) {
+      return normalized;
+    }
+    console.warn("[Scoring][TagFallback]", {
+      questionId: question.id,
+      tags: question.tags,
+      reason: "UNKNOWN_TAGS",
+    });
+    return [FALLBACK_TAG];
   }
 
   const text = `${question.text ?? question.question ?? ""}`.toLowerCase();
@@ -105,6 +123,18 @@ export function scoreSegment(params: {
   questions: Question[];
   answers: SegmentAnswer[];
 }): ScoredSegment {
+  const span = startListeningStageSpan({
+    stage: "result_computed",
+    context: createTelemetryContext({
+      traceId: "trc_result_score_segment",
+      requestId: "req_result_score_segment",
+      userId: null,
+      sessionId: null,
+      sectionId: null,
+      partId: null,
+      agentName: "scoring_service",
+    }),
+  });
   const { questions, answers } = params;
   const answerMap = new Map(answers.map((ans) => [String(ans.questionId), ans.choiceId ?? null]));
   let correct = 0;
@@ -150,13 +180,21 @@ export function scoreSegment(params: {
     ? Object.keys(mistakeTagAccumulator).sort((a, b) => mistakeTagAccumulator[b] - mistakeTagAccumulator[a])
     : [FALLBACK_TAG];
 
-  return {
+  const result = {
     correct,
     total,
     mistakeTags,
     tagStats,
     detail,
   };
+  void finishListeningStageSpan(span, {
+    success: true,
+    metadata: {
+      total_questions: total,
+      correct,
+    },
+  });
+  return result;
 }
 
 export const friendlyTagLabel = (tag: string): string => {
@@ -172,6 +210,45 @@ export const friendlyTagLabel = (tag: string): string => {
       inference: "Inference",
       attitude: "Speaker attitude",
       general: "Overall understanding",
+      spelling_capture: "Spelling capture",
+      instruction_limit_violation: "Instruction limit handling",
+      map_spatial_reference: "Map spatial references",
+      matching_pair_confusion: "Matching pair confusion",
     }[tag] ?? TAG_LABELS[tag] ?? "General listening"
   );
+};
+
+export const buildTagQualityReport = (questions: Question[]) => {
+  const issues: Array<{ questionId: string; issue: string; severity: "warning" | "error"; confidence?: number }> = [];
+  questions.forEach((question, index) => {
+    const questionId = String(question.id ?? `q${index + 1}`);
+    const tags = Array.isArray(question.tags) ? question.tags : [];
+    if (!tags.length) {
+      issues.push({ questionId, issue: "MISSING_TAGS", severity: "error", confidence: 0 });
+      return;
+    }
+    const invalid = tags.filter((tag) => !VALID_SCORING_TAGS.has(tag.toLowerCase()));
+    if (invalid.length) {
+      issues.push({ questionId, issue: `UNKNOWN_TAGS:${invalid.join(",")}`, severity: "error", confidence: 0.2 });
+    }
+
+    const normalized = tags.map((tag) => tag.toLowerCase());
+    const unique = new Set(normalized);
+    if (unique.size !== normalized.length) {
+      issues.push({ questionId, issue: "DUPLICATE_TAGS", severity: "warning", confidence: 0.4 });
+    }
+
+    if (normalized.includes("general") && normalized.length > 1) {
+      issues.push({ questionId, issue: "CONFLICT_GENERAL_WITH_SPECIFIC", severity: "warning", confidence: 0.35 });
+    }
+
+    if (normalized.length === 1 && normalized[0] === FALLBACK_TAG) {
+      issues.push({ questionId, issue: "LOW_CONFIDENCE_FALLBACK_ONLY", severity: "warning", confidence: 0.3 });
+    }
+  });
+  return {
+    taxonomyVersion: LISTENING_TAG_TAXONOMY_VERSION,
+    ok: issues.filter((issue) => issue.severity === "error").length === 0,
+    issues,
+  };
 };

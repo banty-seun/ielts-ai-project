@@ -1,5 +1,7 @@
 import { Request, Response } from 'express';
 import { storage } from '../storage';
+import { ensureSegmentOrder } from '../services/segmentOrder';
+import { buildManifestReadiness } from '../services/listeningReadiness';
 
 // Get task progress by ID
 export const getTaskProgressById = async (req: any, res: Response) => {
@@ -38,10 +40,19 @@ export const getTaskProgressById = async (req: any, res: Response) => {
       });
     }
     
+    const ensured = await ensureSegmentOrder(taskProgress);
+
     // Return the task progress record
+    const responseTask = ensured ?? taskProgress;
+    const readiness = responseTask.skill === "listening"
+      ? await buildManifestReadiness(responseTask as any)
+      : null;
     return res.status(200).json({
       success: true,
-      taskProgress
+      taskProgress: responseTask,
+      manifest_status: readiness?.manifestStatus ?? null,
+      part_ready: readiness?.partReady ?? null,
+      manifest: readiness?.manifest ?? null,
     });
   } catch (error: any) {
     console.error('[Task Progress API] Error fetching task progress by ID:', error);

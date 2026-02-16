@@ -61,7 +61,7 @@ function SkillCard({ name, icon, score, enabled, href, onClick }: SkillCardProps
   if (enabled && href) {
     return (
       <Link href={href}>
-        <a>{content}</a>
+        {content}
       </Link>
     );
   }

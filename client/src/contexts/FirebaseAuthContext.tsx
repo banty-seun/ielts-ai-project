@@ -1,4 +1,4 @@
-import React, { createContext, useState, useEffect, useContext, ReactNode } from 'react';
+import React, { createContext, useState, useEffect, useContext, ReactNode, useRef } from 'react';
 import { 
   User, 
   createUserWithEmailAndPassword, 
@@ -17,11 +17,12 @@ import { useToast } from '@/hooks/use-toast';
 interface FirebaseAuthContextType {
   currentUser: User | null;
   loading: boolean;
+  authReady: boolean;
   signUp: (email: string, password: string) => Promise<User>;
   logIn: (email: string, password: string) => Promise<User>;
   logOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
-  getToken: () => Promise<string | null>;
+  getToken: (forceRefresh?: boolean) => Promise<string | null>;
   sendEmailVerification: (user: User) => Promise<void>;
   isEmailVerified: boolean;
 }
@@ -30,6 +31,7 @@ interface FirebaseAuthContextType {
 export const FirebaseAuthContext = createContext<FirebaseAuthContextType>({
   currentUser: null,
   loading: true,
+  authReady: false,
   signUp: async () => { throw new Error('Not implemented'); },
   logIn: async () => { throw new Error('Not implemented'); },
   logOut: async () => { throw new Error('Not implemented'); },
@@ -50,11 +52,29 @@ interface FirebaseAuthProviderProps {
 export const FirebaseAuthProvider: React.FC<FirebaseAuthProviderProps> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [authReady, setAuthReady] = useState(false);
   const { toast } = useToast();
   const isDevEnv = process.env.NODE_ENV !== 'production';
+  const authInitRef = useRef(false);
+  const authReadyRef = useRef(false);
+
+  useEffect(() => {
+    console.log('[AuthProvider] mounted');
+    return () => {
+      console.log('[AuthProvider] unmounted');
+    };
+  }, []);
 
   // Handle Firebase auth state changes
   useEffect(() => {
+    if (authInitRef.current) {
+      if (isDevEnv) {
+        console.log('[Firebase Auth] Initialization already completed (skipping)');
+      }
+      return;
+    }
+    authInitRef.current = true;
+
     // Track last token update to prevent spamming Firebase
     let lastTokenUpdate = 0;
     const TOKEN_UPDATE_COOLDOWN = 300000; // 5 minutes
@@ -65,6 +85,13 @@ export const FirebaseAuthProvider: React.FC<FirebaseAuthProviderProps> = ({ chil
       }
       setCurrentUser(user);
       setLoading(false);
+      if (!authReadyRef.current) {
+        authReadyRef.current = true;
+        setAuthReady(true);
+        console.log('[Firebase Auth] authReady=true');
+      } else {
+        setAuthReady(true);
+      }
       
       // Update token manager with the current user's token
       if (user) {
@@ -146,8 +173,11 @@ export const FirebaseAuthProvider: React.FC<FirebaseAuthProviderProps> = ({ chil
     });
 
     // Cleanup subscription
-    return () => unsubscribe();
-  }, [toast]); // Add toast dependency
+    return () => {
+      authInitRef.current = false;
+      unsubscribe();
+    };
+  }, [toast, isDevEnv]); // Add toast dependency
 
   // Sign up function
   const signUp = async (email: string, password: string): Promise<User> => {
@@ -380,6 +410,7 @@ export const FirebaseAuthProvider: React.FC<FirebaseAuthProviderProps> = ({ chil
   const value: FirebaseAuthContextType = {
     currentUser,
     loading,
+    authReady,
     signUp,
     logIn,
     logOut,

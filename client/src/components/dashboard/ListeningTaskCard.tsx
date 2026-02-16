@@ -2,7 +2,7 @@ import React from 'react';
 import { cn } from '../../lib/utils';
 import { Headphones, Play, Pause, Clock, ArrowRight, RotateCcw } from 'lucide-react';
 import { Progress } from '../ui/progress';
-import { Button } from '../ui/button';
+import { msToMMSS } from '@shared/constants';
 
 export interface ListeningTask {
   id: string;
@@ -18,6 +18,7 @@ export interface ListeningTask {
   duration: string;
   description: string;
   status: 'not-started' | 'in-progress' | 'completed';
+  durationMinutes?: number;
   progress?: {
     percentage: number;
     currentQuestion: number;
@@ -36,6 +37,12 @@ export interface ListeningTask {
   isStarting?: boolean;
   assignedDate?: string;
   sequenceNumber?: number;
+  performanceCoachStatus?: {
+    recommendationAdopted?: boolean;
+    trendImpact?: 'up' | 'down' | 'flat' | null;
+    loopBreakMetric?: string | null;
+    sourceAnalysisId?: string | null;
+  } | null;
   // Session state for pause/resume
   sessionState?: {
     status: 'running' | 'paused' | 'completed' | 'expired';
@@ -48,9 +55,10 @@ interface ListeningTaskCardProps {
   task: ListeningTask;
   onClick?: () => void;
   className?: string;
+  ctaDisabled?: boolean;
 }
 
-export default function ListeningTaskCard({ task, onClick, className }: ListeningTaskCardProps) {
+export default function ListeningTaskCard({ task, onClick, className, ctaDisabled = false }: ListeningTaskCardProps) {
   // Format duration from "6 min" to just "6 min", handle various formats
   const formatDuration = (duration: string) => {
     const match = duration.match(/(\d+)/);
@@ -94,14 +102,20 @@ export default function ListeningTaskCard({ task, onClick, className }: Listenin
       ? (task as any).durationMinutes
       : undefined;
 
+  const disabled = ctaDisabled || task.isStarting;
+  const handleClick = () => {
+    if (disabled) return;
+    onClick?.();
+  };
+
   return (
     <div
-      onClick={onClick}
+      onClick={handleClick}
       className={cn(
         'p-4 md:p-5',
         'rounded-xl',
         'transition-all duration-200',
-        'cursor-pointer',
+        disabled ? 'cursor-not-allowed opacity-80' : 'cursor-pointer',
         'min-h-[80px]',
         getCardStyles(),
         'hover:shadow-md',
@@ -213,18 +227,39 @@ export default function ListeningTaskCard({ task, onClick, className }: Listenin
         </div>
       )}
 
+      {task.performanceCoachStatus && (
+        <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+          <span
+            className={cn(
+              'px-2 py-0.5 rounded-full border',
+              task.performanceCoachStatus.recommendationAdopted
+                ? 'bg-green-50 text-green-700 border-green-200'
+                : 'bg-gray-50 text-gray-700 border-gray-300',
+            )}
+          >
+            {task.performanceCoachStatus.recommendationAdopted ? 'Recommendation adopted' : 'Recommendation pending'}
+          </span>
+          {task.performanceCoachStatus.trendImpact && (
+            <span className="px-2 py-0.5 rounded-full border bg-blue-50 text-blue-700 border-blue-200">
+              Trend impact: {task.performanceCoachStatus.trendImpact}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* CTA Link */}
       <div className="mt-2">
-        {task.status === 'not-started' && (
+        {task.status === 'not-started' && !task.sessionState && (
           <button
             onClick={(e) => {
               e.stopPropagation();
+              if (disabled) return;
               onClick?.();
             }}
-            disabled={task.isStarting}
+            disabled={disabled}
             className={cn(
               "text-xs font-medium flex items-center gap-1 transition-colors",
-              task.isStarting
+              disabled
                 ? "text-indigo-400 cursor-not-allowed"
                 : "text-indigo-600 hover:text-indigo-700"
             )}
@@ -238,8 +273,10 @@ export default function ListeningTaskCard({ task, onClick, className }: Listenin
           <button
             onClick={(e) => {
               e.stopPropagation();
+              if (disabled) return;
               onClick?.();
             }}
+            disabled={disabled}
             className="text-xs text-blue-600 hover:text-blue-700 font-medium flex items-center gap-1 transition-colors"
           >
             Continue
@@ -251,8 +288,10 @@ export default function ListeningTaskCard({ task, onClick, className }: Listenin
           <button
             onClick={(e) => {
               e.stopPropagation();
+              if (disabled) return;
               onClick?.();
             }}
+            disabled={disabled}
             className={cn(
               "text-xs font-medium flex items-center gap-1 transition-colors",
               task.sessionState.status === 'paused'
@@ -263,7 +302,7 @@ export default function ListeningTaskCard({ task, onClick, className }: Listenin
             {task.sessionState.status === 'paused' ? (
               <>
                 <Play className="h-3 w-3" />
-                Resume Session
+                Continue • {msToMMSS(task.sessionState.remainingMs)}
               </>
             ) : (
               <>
@@ -278,8 +317,10 @@ export default function ListeningTaskCard({ task, onClick, className }: Listenin
           <button
             onClick={(e) => {
               e.stopPropagation();
+              if (disabled) return;
               onClick?.();
             }}
+            disabled={disabled}
             className="text-xs text-gray-600 hover:text-gray-700 font-medium flex items-center gap-1 transition-colors"
           >
             <RotateCcw className="h-3 w-3" />
