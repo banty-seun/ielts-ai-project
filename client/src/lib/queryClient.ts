@@ -1,5 +1,12 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
+const IS_DEV = import.meta.env.MODE !== "production";
+const debugLog = (...args: any[]) => {
+  if (IS_DEV) {
+    console.log(...args);
+  }
+};
+
 // Firebase token storage singleton with enhanced caching
 // This allows components that don't have direct access to the FirebaseAuthContext
 // to still include the token in their requests, with proper caching behavior
@@ -41,9 +48,9 @@ class TokenManager {
           // Validate token expiry - clear if already expired
           if (Date.now() >= this.tokenExpiry) {
             this.clearToken();
-            console.log('[TokenManager] Cleared expired token from cache');
+            debugLog('[TokenManager] Cleared expired token from cache');
           } else {
-            console.log('[TokenManager] Loaded cached token expiring in', 
+            debugLog('[TokenManager] Loaded cached token expiring in', 
               Math.round((this.tokenExpiry - Date.now()) / 1000 / 60), 'minutes');
           }
         }
@@ -80,7 +87,7 @@ class TokenManager {
     if (token) {
       this.tokenCreatedAt = Date.now();
       this.tokenExpiry = this.tokenCreatedAt + this.TOKEN_LIFETIME_MS;
-      console.log(`[TokenManager] Token updated, expires in ${this.TOKEN_LIFETIME_MS / 1000 / 60} minutes`);
+      debugLog(`[TokenManager] Token updated, expires in ${this.TOKEN_LIFETIME_MS / 1000 / 60} minutes`);
     } else {
       this.clearToken();
     }
@@ -98,10 +105,10 @@ class TokenManager {
   public getToken(): string | null {
     // If token is expired, return null
     if (this.token && Date.now() >= this.tokenExpiry) {
-      console.log('[TokenManager] Token expired, returning null');
+      debugLog('[TokenManager] Token expired, returning null');
       return null;
     }
-    console.log('[apiClient] getToken() called, returned:', this.token?.substring(0,10) + '...');
+    debugLog('[TokenManager] getToken called (masked)');
     return this.token;
   }
   
@@ -180,7 +187,7 @@ export async function apiRequest(
   const headers = getAuthHeaders(!!data);
   
   // Log for debugging
-  console.log(`[API] ${method} request to ${url}`, {
+  debugLog(`[API] ${method} request to ${url}`, {
     hasToken: !!tokenManager.getToken(),
     hasCredentials: true
   });
@@ -193,7 +200,7 @@ export async function apiRequest(
   });
 
   // Log response for debugging
-  console.log(`[API] ${method} response from ${url}`, { 
+  debugLog(`[API] ${method} response from ${url}`, { 
     status: res.status,
     ok: res.ok
   });
@@ -212,14 +219,14 @@ export const getQueryFn: <T>(options: {
     const getAndRefreshToken = async (forceRefresh = false) => {
       // Implementation will be provided by Firebase auth context
       if (forceRefresh && typeof window !== 'undefined') {
-        console.log('[Query] Forcing token refresh');
+        debugLog('[Query] Forcing token refresh');
         // Clear existing token to force a refresh
         tokenManager.clearToken();
         
         // Attempt to get a fresh token from local storage
         const storedToken = localStorage.getItem('firebase_token');
         if (storedToken) {
-          console.log('[Query] Using refreshed token from localStorage');
+          debugLog('[Query] Using refreshed token from localStorage');
           tokenManager.setToken(storedToken);
           return storedToken;
         }
@@ -235,10 +242,10 @@ export const getQueryFn: <T>(options: {
     if (token) {
       const authHeader = `Bearer ${token}`;
       headers['Authorization'] = authHeader;
-      console.log(`[Query] Request to ${queryKey[0]} with token`);
-      console.log('[apiClient] Authorization header:', authHeader.slice(0, 15) + '...');
+      debugLog(`[Query] Request to ${queryKey[0]} with token (masked)`);
+      debugLog('[apiClient] Authorization header attached (masked)');
     } else {
-      console.log(`[Query] Request to ${queryKey[0]} without token`);
+      debugLog(`[Query] Request to ${queryKey[0]} without token`);
     }
     
     try {
@@ -248,7 +255,7 @@ export const getQueryFn: <T>(options: {
       });
   
       // Log for debugging
-      console.log(`[Query] Response from ${queryKey[0]}`, { 
+      debugLog(`[Query] Response from ${queryKey[0]}`, { 
         status: res.status, 
         hasToken: !!token 
       });
@@ -258,16 +265,16 @@ export const getQueryFn: <T>(options: {
         console.warn(`[Query] 401 Unauthorized from ${queryKey[0]}`);
         
         if (unauthorizedBehavior === "returnNull") {
-          console.log(`[Query] Returning null for 401 response as configured`);
+          debugLog(`[Query] Returning null for 401 response as configured`);
           return null;
         }
         
         // Try to refresh the token and retry once
-        console.log('[Query] Attempting to refresh token and retry request');
+        debugLog('[Query] Attempting to refresh token and retry request');
         const freshToken = await getAndRefreshToken(true);
         
         if (freshToken) {
-          console.log(`[Query] Retrying with fresh token: ${freshToken.substring(0, 10)}...`);
+          debugLog('[Query] Retrying with fresh token (masked)');
           const newAuthHeader = `Bearer ${freshToken}`;
           headers['Authorization'] = newAuthHeader;
           
@@ -282,7 +289,7 @@ export const getQueryFn: <T>(options: {
             await throwIfResNotOk(retryRes);
           }
           
-          console.log(`[Query] Retry successful, status: ${retryRes.status}`);
+          debugLog(`[Query] Retry successful, status: ${retryRes.status}`);
           return await retryRes.json();
         } else {
           console.error('[Query] Failed to get fresh token for retry');
@@ -307,8 +314,8 @@ export const queryClient = new QueryClient({
       queryFn: getQueryFn({ on401: "throw" }),
       refetchInterval: false,
       refetchOnWindowFocus: false,
-      staleTime: Infinity,
-      retry: false,
+      staleTime: 60_000,
+      retry: 1,
     },
     mutations: {
       retry: false,

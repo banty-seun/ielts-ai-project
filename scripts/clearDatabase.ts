@@ -5,7 +5,7 @@
  */
 
 import { db } from '../server/db';
-import { users, studyPlans, weeklyStudyPlans, taskProgress } from '../shared/schema';
+import { users, studyPlans, weeklyStudyPlans, taskProgress, taskAttempts } from '../shared/schema';
 import { eq } from 'drizzle-orm';
 import { exit } from 'process';
 
@@ -15,6 +15,9 @@ const run = async () => {
   
   try {
     // Delete in order to respect foreign key constraints
+    console.log('Deleting task attempts...');
+    await db.delete(taskAttempts);
+
     console.log('Deleting task progress records...');
     await db.delete(taskProgress);
     

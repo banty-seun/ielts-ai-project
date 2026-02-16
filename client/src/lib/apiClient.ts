@@ -3,6 +3,14 @@
  */
 
 import { tokenManager } from '@/lib/queryClient';
+
+const IS_DEV = import.meta.env.DEV;
+const debugLog = (...args: any[]) => {
+  if (IS_DEV) {
+    console.log(...args);
+  }
+};
+type GetTokenFn = (forceRefresh?: boolean) => Promise<string | null>;
 // The useFirebaseAuthContext hook is only imported in the useAuthenticatedApi hook
 // to avoid React hooks call rules violations
 
@@ -19,11 +27,9 @@ export async function apiRequestWithToken(
   if (token) {
     const authHeader = `Bearer ${token}`;
     headers.set('Authorization', authHeader);
-    console.log(`[API Client] Request to ${path} with token`);
-    console.log('[apiClient] getToken() return value:', token.substring(0, 10) + '...');
-    console.log('[apiClient] Authorization header:', authHeader.slice(0, 15) + '...');
+    debugLog(`[API Client] Request to ${path} with token (masked)`);
   } else {
-    console.log(`[API Client] Request to ${path} without token - no token available`);
+    debugLog(`[API Client] Request to ${path} without token - no token available`);
   }
   
   // Make the request with the updated headers
@@ -34,7 +40,7 @@ export async function apiRequestWithToken(
   });
   
   // Log response for debugging
-  console.log(`[API Client] Response from ${path}`, { 
+  debugLog(`[API Client] Response from ${path}`, { 
     status: response.status, 
     ok: response.ok,
     hasToken: !!token
@@ -55,7 +61,7 @@ const tokenRefreshTracker = {
 export async function apiRequestWithFreshToken(
   path: string,
   options: RequestInit = {},
-  getToken: () => Promise<string | null>
+  getToken: GetTokenFn,
 ): Promise<Response> {
   const now = Date.now();
   const timeSinceLastRefresh = now - tokenRefreshTracker.lastRefreshTime;
@@ -68,18 +74,18 @@ export async function apiRequestWithFreshToken(
     backoffCooldownMs - timeSinceLastRefresh : 0;
   
   if (isInBackoff && timeSinceLastRefresh < backoffCooldownMs) {
-    console.log(`[API Client] Skipping token refresh for ${path} - in backoff mode for ${Math.round(backoffTimeRemaining/1000)}s more`);
+    debugLog(`[API Client] Skipping token refresh for ${path} - in backoff mode for ${Math.round(backoffTimeRemaining/1000)}s more`);
     return apiRequestWithToken(path, options);
   }
   
   if (!shouldTryRefresh) {
-    console.log(`[API Client] Using cached token for ${path} - last refresh ${Math.round(timeSinceLastRefresh/1000)}s ago`);
+    debugLog(`[API Client] Using cached token for ${path} - last refresh ${Math.round(timeSinceLastRefresh/1000)}s ago`);
     return apiRequestWithToken(path, options);
   }
   
   try {
     // Get a fresh token directly from Firebase Auth
-    console.log(`[API Client] Requesting fresh token for ${path}`);
+    debugLog(`[API Client] Requesting fresh token for ${path}`);
     const token = await getToken();
     
     // Token refresh successful, reset retry counter
@@ -87,26 +93,24 @@ export async function apiRequestWithFreshToken(
     tokenRefreshTracker.refreshAttempts = 0;
     
     if (token) {
-      console.log(`[API Client] Received fresh token for ${path}`, {
+      debugLog(`[API Client] Received fresh token for ${path}`, {
         length: token.length,
-        tokenStart: `${token.substring(0, 10)}...`,
-        tokenEnd: `...${token.substring(token.length - 10)}`
       });
       
       // Update token in the token manager for future requests
-      console.log('[Auth] Token updated in token manager');
+      debugLog('[Auth] Token updated in token manager');
       tokenManager.setToken(token);
     } else {
-      console.log(`[API Client] No token received for ${path}`);
+      debugLog(`[API Client] No token received for ${path}`);
     }
     
     // Add the token to the request headers if available
     const headers = new Headers(options.headers);
     if (token) {
       headers.set('Authorization', `Bearer ${token}`);
-      console.log(`[API Client] Request to ${path} with fresh token`);
+      debugLog(`[API Client] Request to ${path} with fresh token (masked)`);
     } else {
-      console.log(`[API Client] Request to ${path} without token - no fresh token available`);
+      debugLog(`[API Client] Request to ${path} without token - no fresh token available`);
     }
     
     // Make the request with the updated headers
@@ -117,7 +121,7 @@ export async function apiRequestWithFreshToken(
     });
     
     // Log response for debugging
-    console.log(`[API Client] Response from ${path}`, { 
+    debugLog(`[API Client] Response from ${path}`, { 
       status: response.status, 
       ok: response.ok,
       hasToken: !!token
@@ -160,11 +164,11 @@ async function safeParseJson<T>(response: Response): Promise<T> {
   try {
     // Check if the content type is JSON - guard headers access
     const contentType = response.headers?.get ? response.headers.get('content-type') : null;
-    console.log(`[API Client] safeParseJson called for ${response.url}, content-type: ${contentType}`);
+  debugLog(`[API Client] safeParseJson called for ${response.url}, content-type: ${contentType}`);
     
     if (contentType && contentType.includes('application/json')) {
       const jsonData = await response.json();
-      console.log(`[API Client] Parsed JSON data:`, jsonData);
+      debugLog(`[API Client] Parsed JSON data:`, jsonData);
       return jsonData;
     } else {
       // For non-JSON responses, read the text and log it
@@ -196,6 +200,37 @@ async function safeParseJson<T>(response: Response): Promise<T> {
     console.error(`[API Client] JSON parsing error:`, error);
     throw new Error(`Failed to parse response: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
+}
+
+async function withAuthRetry(
+  path: string,
+  options: RequestInit,
+  getToken: GetTokenFn,
+): Promise<Response> {
+  const normalized: RequestInit = {
+    credentials: options.credentials ?? 'include',
+    ...options,
+  };
+
+  let response = await apiRequestWithFreshToken(path, normalized, getToken);
+  if (response.status !== 401 && response.status !== 403) {
+    return response;
+  }
+
+  console.warn('[API Client] 401/403 on', path, '→ forcing token refresh and retry once');
+
+  const forcedToken = await getToken(true);
+  const headers = new Headers(normalized.headers);
+  if (forcedToken) {
+    headers.set('Authorization', `Bearer ${forcedToken}`);
+  }
+
+  response = await fetch(path, {
+    ...normalized,
+    headers,
+  });
+
+  return response;
 }
 
 // GET request with authentication
@@ -343,7 +378,7 @@ export async function postJsonWithAuth(
   if (token) headers.set('Authorization', `Bearer ${token}`);
 
   // DEBUG: minimal diagnostics
-  console.log('[POST][attempt] url', url.toString(), 'hasToken', !!token);
+  debugLog('[POST][attempt] url', url.toString(), 'hasToken', !!token);
 
   return fetch(url.toString(), {
     method: 'POST',
@@ -356,149 +391,137 @@ export async function postJsonWithAuth(
 // These functions are used directly with getToken from FirebaseAuthContext
 // Example usage:
 // const { getToken } = useFirebaseAuthContext();
-// IMPORTANT: This function now returns Response, not parsed JSON
-export async function getFreshWithAuth(path: string, getToken: () => Promise<string | null>): Promise<Response> {
-  // Validate getToken parameter
-  if (typeof getToken !== 'function') {
-    throw new Error('getToken is not a function');
-  }
-  
-  // IMPORTANT: declare before use (prevents implicit global / TDZ bugs)
-  let res: Response;
-  
-  try {
-    res = await apiRequestWithFreshToken(path, {}, getToken);
-  } catch (e: any) {
-    throw new Error(`apiRequestWithFreshToken failed: ${e?.message ?? 'unknown'}`);
-  }
-  
-  // Null-safe headers access; never assume headers exists
+// Returns parsed JSON (or throws) instead of raw Response
+export async function getFreshWithAuth<T = unknown>(
+  path: string,
+  getToken: GetTokenFn,
+): Promise<T> {
+  const res = await withAuthRetry(
+    path,
+    {
+      method: 'GET',
+    },
+    getToken,
+  );
+
   const contentType = res?.headers?.get ? res.headers.get('content-type') : null;
-  console.log('[API][getFreshWithAuth][return]', {
+  debugLog('[API][getFreshWithAuth][response]', {
     url: path,
     ok: res?.ok,
     status: res?.status,
     contentType,
   });
-  
-  // Always return a real Response object; never undefined/null
-  return res;
-}
 
-export async function postFreshWithAuth<T>(
-  path: string, 
-  data: any, 
-  getToken: (forceRefresh?: boolean) => Promise<string | null>
-): Promise<T> {
-  try {
-    // Get token and log it before the API call
-    const token = await getToken();
-    if (token) {
-      console.log('[apiClient] postFreshWithAuth using token:', token.substring(0, 10) + '...');
-    } else {
-      console.log('[apiClient] postFreshWithAuth has no token');
-    }
-    
-    // Prepare auth header and log it
-    const authHeader = token ? `Bearer ${token}` : '';
-    console.log('[apiClient] Authorization header:', authHeader.slice(0, 15) + '...');
-    
-    // Make the request
-    const response = await fetch(path, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': authHeader
-      },
-      body: JSON.stringify(data),
-      credentials: 'include'
-    });
-    
-    // If got a 401, try once with a fresh token
-    if (response.status === 401) {
-      console.warn('[apiClient] 401 — refreshing token and retrying');
-      
-      // Force refresh the token
-      const newToken = await getToken(true);
-      console.log('[apiClient] Got fresh token:', newToken ? newToken.substring(0, 10) + '...' : 'null');
-      
-      // Prepare auth header with new token
-      const newAuthHeader = newToken ? `Bearer ${newToken}` : '';
-      console.log('[apiClient] New Authorization header:', newAuthHeader.slice(0, 15) + '...');
-      
-      // Retry the request with the new token
-      const retryResponse = await fetch(path, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': newAuthHeader
-        },
-        body: JSON.stringify(data),
-        credentials: 'include'
-      });
-      
-      // Return the retry response (success or failure)
-      if (!retryResponse.ok) {
-        const errorText = await retryResponse.text();
-        console.error(`[apiClient] Retry also failed: ${retryResponse.status} ${errorText}`);
-        throw new Error(`API error: ${retryResponse.status} ${retryResponse.statusText} - ${errorText}`);
+  if (!res.ok) {
+    let body: unknown = undefined;
+    try {
+      body = await res.clone().json();
+    } catch {
+      try {
+        body = await res.clone().text();
+      } catch {
+        body = undefined;
       }
-      
-      return safeParseJson<T>(retryResponse);
     }
-    
-    // If not a 401 error but still not OK, throw error
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`[apiClient] Request failed: ${response.status} ${errorText}`);
-      throw new Error(`API error: ${response.status} ${response.statusText} - ${errorText}`);
-    }
-    
-    return safeParseJson<T>(response);
-  } catch (err) {
-    console.error('[apiClient] Error in postFreshWithAuth:', err);
+    const err = new Error(`HTTP ${res.status} ${res.statusText || ''}`.trim());
+    (err as any).status = res.status;
+    (err as any).body = body;
     throw err;
+  }
+
+  if (res.status === 204 || res.headers.get('content-length') === '0') {
+    return undefined as T;
+  }
+
+  try {
+    const data = (await res.json()) as T;
+    debugLog('[API][getFreshWithAuth][parsed]', {
+      url: path,
+      parsed: true,
+    });
+    return data;
+  } catch (err: any) {
+    const text = await res.text().catch(() => '');
+    const parseErr = new Error(
+      `Failed to parse JSON response: ${err?.message ?? 'unknown'}${
+        text ? ` | raw="${text.slice(0, 200)}"` : ''
+      }`,
+    );
+    (parseErr as any).status = res.status;
+    throw parseErr;
   }
 }
 
-export async function patchFreshWithAuth<T>(
-  path: string, 
-  data: any, 
-  getToken: () => Promise<string | null>
+export async function postFreshWithAuth<T>(
+  path: string,
+  data: any,
+  getToken: GetTokenFn,
 ): Promise<T> {
-  const response = await apiRequestWithFreshToken(
-    path, 
+  const response = await withAuthRetry(
+    path,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(data),
+    },
+    getToken,
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    console.error(`[apiClient] Request failed: ${response.status} ${errorText}`);
+    throw new Error(`API error: ${response.status} ${response.statusText} - ${errorText}`);
+  }
+
+  return safeParseJson<T>(response);
+}
+
+export async function patchFreshWithAuth<T>(
+  path: string,
+  data: any,
+  getToken: GetTokenFn,
+): Promise<T> {
+  const response = await withAuthRetry(
+    path,
     {
       method: 'PATCH',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
       },
-      body: JSON.stringify(data)
-    }, 
-    getToken
+      body: JSON.stringify(data),
+    },
+    getToken,
   );
-  
+
   if (!response.ok) {
-    // For error responses, try to safely parse JSON error message if available
     try {
       const contentType = response.headers?.get ? response.headers.get('content-type') : null;
       if (contentType && contentType.includes('application/json')) {
         const errorData = await response.json();
-        throw new Error(`API error: ${response.status} ${response.statusText} - ${errorData.message || JSON.stringify(errorData)}`);
+        throw new Error(
+          `API error: ${response.status} ${response.statusText} - ${
+            errorData.message || JSON.stringify(errorData)
+          }`,
+        );
       } else {
         const errorText = await response.text();
-        console.error(`[API Client] Non-JSON error response from ${path}:`, {
+        console.error('[API Client] Non-JSON error response from', path, {
           status: response.status,
           contentType: contentType || 'none',
-          textPreview: errorText.substring(0, 100) + (errorText.length > 100 ? '...' : '')
+          textPreview: errorText.substring(0, 100) + (errorText.length > 100 ? '...' : ''),
         });
-        throw new Error(`API error: ${response.status} ${response.statusText} - Non-JSON response received`);
+        throw new Error(
+          `API error: ${response.status} ${response.statusText} - Non-JSON response received`,
+        );
       }
     } catch (parseError) {
-      // If we can't parse the error response, just throw a basic error
       throw new Error(`API error: ${response.status} ${response.statusText}`);
     }
   }
-  
+
   return safeParseJson<T>(response);
 }
+
+// Legacy helper removed in favour of withAuthRetry

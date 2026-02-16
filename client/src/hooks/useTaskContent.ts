@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { getFreshWithAuth } from '@/lib/apiClient';
 import { useFirebaseAuthContext } from '@/contexts/FirebaseAuthContext';
+import type { ListeningRendererRoot } from '@shared/listening';
 
 // Debug toggle
 const DEBUG = Boolean((window as any).__DEBUG__);
@@ -15,6 +16,8 @@ type UiQuestion = {
   correctAnswer?: string;
   explanation?: string;
   hint?: string;
+  groupId?: string | null;
+  optionOrder?: string[];
 };
 
 export type TaskContent = {
@@ -25,12 +28,45 @@ export type TaskContent = {
   scriptText: string | null;
   audioUrl: string | null;
   questions: UiQuestion[];
+  rendererPayload?: ListeningRendererRoot | null;
+  contractMode?: "legacy" | "dual";
   accent?: string | null;
   duration?: number | 0;
   replayLimit?: number | 3;
+  manifest?: {
+    audio_assets?: Array<{
+      segment_no: number;
+      accent: string;
+      voice_id?: string | null;
+      url: string;
+      duration_seconds: number;
+      url_mode?: "public" | "signed";
+      url_expires_at?: string | null;
+    }>;
+    [key: string]: any;
+  } | null;
 };
 
-type ApiOk = { success: true; taskContent: any };
+type ApiOk = {
+  success: true;
+  taskContent: any;
+  ready?: boolean;
+  phase?: string;
+  etaSecs?: number | null;
+  taskSummary?: {
+    id: string;
+    title: string;
+    activityType?: string;
+    scenario?: string;
+    sessionMinutes?: number | null;
+  } | null;
+  session?: {
+    status: string;
+    retryCount: number;
+    message: string;
+    errorCode?: string | null;
+  };
+};
 type ApiErr = { success: false; message?: string };
 
 export function useTaskContent(
@@ -50,35 +86,22 @@ export function useTaskContent(
     queryFn: async (): Promise<ApiOk> => {
       if (!taskId) throw new Error('Task ID is required');
 
-      // Call API (getFreshWithAuth ALWAYS returns Response or throws)
-      const res = await getFreshWithAuth(`/api/firebase/task-content/${taskId}`, getToken);
-
-      if (!res.ok) {
-        // Rich error message using json/text fallback
-        let details = '';
-        try {
-          const ct = res?.headers?.get ? res.headers.get('content-type') : null;
-          if (ct && ct.includes('application/json')) {
-            const j = await res.clone().json();
-            details = j?.message ? ` - ${j.message}` : ` - ${JSON.stringify(j)}`;
-          } else {
-            const t = await res.clone().text();
-            details = t ? ` - ${t.slice(0, 300)}` : '';
-          }
-        } catch {
-          // swallow parse errors
-        }
-        throw new Error(`Task content request failed (${res.status})${details}`);
-      }
-
-      // Parse JSON, clone first so body is not consumed by any future readers
       let data: ApiOk | ApiErr;
       try {
-        data = await res.clone().json();
-      } catch (e: any) {
-        const txt = await res.text().catch(() => '');
+        data = await getFreshWithAuth<ApiOk | ApiErr>(`/api/firebase/task-content/${taskId}`, getToken);
+      } catch (error: any) {
+        const status = error?.status;
+        const body = error?.body;
+        const detail =
+          typeof body === 'string'
+            ? body
+            : body && typeof body === 'object' && 'message' in body
+            ? (body as any).message
+            : '';
         throw new Error(
-          `Failed to parse task content JSON: ${e?.message ?? 'unknown'}${txt ? ` | raw="${txt.slice(0, 180)}"` : ''}`
+          detail
+            ? `Task content request failed${status ? ` (${status})` : ''} - ${detail}`
+            : error?.message || 'Task content request failed'
         );
       }
 
@@ -106,10 +129,10 @@ export function useTaskContent(
     },
     select: (data: any) => {
       const tc = data?.taskContent ?? {};
-      
+
       // Normalize questions from server format to UI format
       const rawQs: any[] = Array.isArray(tc.questions) ? tc.questions : [];
-      
+
       const normalizedQuestions: UiQuestion[] = rawQs
         .map((q: any, qi: number): UiQuestion | null => {
           // Normalize id
@@ -149,7 +172,10 @@ export function useTaskContent(
           const hint =
             typeof q?.hint === 'string' ? q.hint : undefined;
 
-          return { id, text, type, options, correctAnswer, explanation, hint };
+          const groupId = typeof q?.groupId === 'string' ? q.groupId : null;
+          const optionOrder = Array.isArray(q?.optionOrder) ? q.optionOrder.filter((id: any) => typeof id === 'string') : undefined;
+
+          return { id, text, type, options, correctAnswer, explanation, hint, groupId, optionOrder };
         })
         .filter(Boolean) as UiQuestion[];
 
@@ -160,18 +186,30 @@ export function useTaskContent(
           sample: normalizedQuestions[0]
         });
       }
-      
+
       return {
-        id: typeof tc.id === 'string' ? tc.id : taskId,
-        title: tc.taskTitle ?? tc.title ?? null,
-        scenario: tc.scenario ?? null,
-        conversationType: tc.conversationType ?? null,
-        scriptText: tc.scriptText ?? null,
-        audioUrl: tc.audioUrl ?? null,
-        questions: normalizedQuestions,
-        accent: tc.accent ?? 'British',
-        duration: typeof tc.duration === 'number' ? tc.duration : 0,
-        replayLimit: typeof tc.replayLimit === 'number' ? tc.replayLimit : 3,
+        data: {
+          id: typeof tc.id === 'string' ? tc.id : taskId,
+          title: tc.taskTitle ?? tc.title ?? null,
+          scenario: tc.scenario ?? null,
+          conversationType: tc.conversationType ?? null,
+          scriptText: tc.scriptText ?? null,
+          audioUrl: tc.audioUrl ?? null,
+          questions: normalizedQuestions,
+          rendererPayload: tc.questionContract?.renderer ?? null,
+          contractMode: tc.questionContract?.mode === 'dual' ? 'dual' : 'legacy',
+          accent: tc.accent ?? 'British',
+          duration: typeof tc.duration === 'number' ? tc.duration : 0,
+          replayLimit: typeof tc.replayLimit === 'number' ? tc.replayLimit : 3,
+          manifest: data?.manifest ?? null,
+        },
+        // Readiness metadata
+        ready: data?.ready ?? true, // default to true for backward compatibility
+        phase: data?.phase ?? 'idle',
+        etaSecs: data?.etaSecs ?? null,
+        taskSummary: data?.taskSummary ?? null,
+        session: data?.session ?? null,
+        error: null,
       };
     },
   });

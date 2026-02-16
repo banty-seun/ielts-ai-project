@@ -92,7 +92,7 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
       }
       
       // Get all task progress records for this weekly plan
-      const taskProgressRecords = await storage.getTaskProgressByWeeklyPlan(weeklyPlanId);
+      const taskProgressRecords = await storage.getTaskProgressByWeeklyPlan(weeklyPlanId, userId);
       
       console.log(`[Task Progress API] Found ${taskProgressRecords.length} task progress records for weekly plan ${weeklyPlanId}`);
       

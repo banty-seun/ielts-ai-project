@@ -103,7 +103,7 @@ setInterval(() => {
       totalReads: totalOperations.reads,
       totalWrites: totalOperations.writes,
       totalDeletes: totalOperations.deletes,
-      operationsByFeature: [...operationsByFeature.entries()].map(([feature, counts]) => ({
+      operationsByFeature: Array.from(operationsByFeature.entries()).map(([feature, counts]) => ({
         feature,
         reads: counts.reads,
         writes: counts.writes,

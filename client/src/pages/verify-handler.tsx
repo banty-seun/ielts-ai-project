@@ -7,6 +7,12 @@ import { useFirebaseAuthContext } from "@/contexts/FirebaseAuthContext";
 import { getFreshWithAuth } from "@/lib/apiClient";
 import { tokenManager } from "@/lib/queryClient";
 
+const isFirebaseErrorWithCode = (error: unknown): error is { code: string } =>
+  typeof error === "object" &&
+  error !== null &&
+  "code" in error &&
+  typeof (error as { code?: unknown }).code === "string";
+
 export default function VerifyHandler() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
@@ -27,8 +33,8 @@ export default function VerifyHandler() {
           // Step 1: Apply the action code with improved error handling
           try {
             await applyActionCode(auth, oobCode);
-          } catch (error) {
-            if (error.code === "auth/invalid-action-code") {
+          } catch (error: unknown) {
+            if (isFirebaseErrorWithCode(error) && error.code === "auth/invalid-action-code") {
               console.warn("[Email Verification] Code already used or invalid.");
               await auth.currentUser?.reload(); // attempt to recover
             } else {
@@ -96,7 +102,7 @@ export default function VerifyHandler() {
                 console.log('[Email Verification] Onboarding not completed, redirecting to onboarding flow');
                 setLocation('/onboarding');
               }
-            } catch (error) {
+            } catch (error: unknown) {
               console.error("[Email Verification] Error checking onboarding status:", error);
               // Default to onboarding if there's any error
               setLocation('/onboarding');
@@ -106,7 +112,7 @@ export default function VerifyHandler() {
           // Invalid parameters
           throw new Error("Invalid verification parameters");
         }
-      } catch (error) {
+      } catch (error: unknown) {
         console.error("[Email Verification Error]", error);
         
         // Update status and message

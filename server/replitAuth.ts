@@ -1,5 +1,7 @@
 import * as client from "openid-client";
 import { Strategy, type VerifyFunction } from "openid-client/passport";
+import fs from "node:fs/promises";
+import path from "node:path";
 
 import passport from "passport";
 import session from "express-session";
@@ -7,13 +9,111 @@ import type { Express, RequestHandler } from "express";
 import memoize from "memoizee";
 import connectPg from "connect-pg-simple";
 import { storage } from "./storage";
+import { isPrivacySafeLogMode, redactSensitive } from "./utils/privacy";
 
-if (!process.env.REPLIT_DOMAINS) {
+const replitEnabled = process.env.REPLIT_ENABLED === "true";
+
+if (replitEnabled && !process.env.REPLIT_DOMAINS) {
   throw new Error("Environment variable REPLIT_DOMAINS not provided");
 }
 
+const shouldBypassOidc =
+  process.env.AUTH_OFFLINE === "1" ||
+  typeof process.env.FIREBASE_AUTH_EMULATOR_HOST === "string";
+
+const AUTH_VERBOSE_LOGS = process.env.NODE_ENV !== "production";
+
+const authVerboseLog = (label: string, payload?: unknown) => {
+  if (!AUTH_VERBOSE_LOGS) return;
+  if (typeof payload === "undefined") {
+    console.log(label);
+    return;
+  }
+  console.log(label, isPrivacySafeLogMode() ? redactSensitive(payload) : payload);
+};
+
+const authErrorLog = (label: string, payload?: unknown) => {
+  if (typeof payload === "undefined") {
+    console.error(label);
+    return;
+  }
+  console.error(label, isPrivacySafeLogMode() ? redactSensitive(payload) : payload);
+};
+
+const isFileReference = (value?: string): value is string =>
+  typeof value === "string" && value.startsWith("file:");
+
+const resolveFileReference = (fileRef: string) =>
+  path.resolve(process.cwd(), fileRef.replace(/^file:/, ""));
+
 const getOidcConfig = memoize(
   async () => {
+    const issuerRef = process.env.AUTH_ISSUER;
+    const jwksRef = process.env.AUTH_JWKS;
+
+    if (isFileReference(issuerRef) && isFileReference(jwksRef)) {
+      const issuerPath = resolveFileReference(issuerRef);
+      const jwksPath = resolveFileReference(jwksRef);
+
+      const issuerRaw = await fs.readFile(issuerPath, "utf8");
+      const jwksRaw = await fs.readFile(jwksPath, "utf8");
+
+      const issuerMetadata = JSON.parse(issuerRaw);
+      const jwksJson = JSON.parse(jwksRaw);
+
+      if (!issuerMetadata?.issuer) {
+        throw new Error(
+          `[Auth] Local issuer metadata missing "issuer" field (${issuerRef})`
+        );
+      }
+
+      const issuerUrl = new URL(issuerMetadata.issuer);
+      const metadata = { ...issuerMetadata };
+      const jwksUri =
+        typeof metadata.jwks_uri === "string"
+          ? metadata.jwks_uri
+          : `${issuerUrl.origin}/jwks`;
+
+      metadata.jwks_uri = jwksUri;
+
+      const localFetch: client.CustomFetch = async (url, _options) => {
+        const target = url;
+
+        if (target.includes("/.well-known/openid-configuration")) {
+          return new Response(JSON.stringify(metadata), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+
+        if (target === jwksUri) {
+          return new Response(JSON.stringify(jwksJson), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+
+        throw new Error(`[Auth] Local OIDC fetch blocked for ${target}`);
+      };
+
+      const config = await client.discovery(
+        issuerUrl,
+        process.env.REPL_ID!,
+        undefined,
+        undefined,
+        {
+          [client.customFetch]: localFetch,
+        }
+      );
+
+      authVerboseLog("[Auth] Loaded local OIDC metadata", {
+        issuer: metadata.issuer,
+        jwks: jwksRef,
+      });
+
+      return config;
+    }
+
     return await client.discovery(
       new URL(process.env.ISSUER_URL ?? "https://replit.com/oidc"),
       process.env.REPL_ID!
@@ -36,7 +136,7 @@ export function getSession() {
   const isDevelopment = process.env.NODE_ENV !== "production";
   
   // Log environment configuration
-  console.log("[Session Config]", {
+  authVerboseLog("[Session Config]", {
     environment: process.env.NODE_ENV || "not set",
     isDevelopment,
     hostname: process.env.REPLIT_DOMAINS || "localhost"
@@ -84,10 +184,21 @@ async function upsertUser(
 }
 
 export async function setupAuth(app: Express) {
+  if (!replitEnabled) {
+    return;
+  }
+
   app.set("trust proxy", 1);
   app.use(getSession());
   app.use(passport.initialize());
   app.use(passport.session());
+
+  if (shouldBypassOidc) {
+    authVerboseLog("[Auth] OIDC disabled (AUTH_OFFLINE/emulator); using Firebase Admin only");
+    passport.serializeUser((user: Express.User, cb) => cb(null, user));
+    passport.deserializeUser((user: Express.User, cb) => cb(null, user));
+    return;
+  }
 
   const config = await getOidcConfig();
 
@@ -120,11 +231,10 @@ export async function setupAuth(app: Express) {
 
   app.get("/api/login", (req, res, next) => {
     // Log session state before login attempt
-    console.log('[Auth Login] Session before login:', {
-      id: req.sessionID,
+    authVerboseLog("[Auth Login] Session context:", {
       exists: !!req.session,
       isAuthenticated: req.isAuthenticated(),
-      cookies: req.headers.cookie ? 'Present' : 'Missing'
+      hasCookieHeader: Boolean(req.headers.cookie),
     });
     
     // Set a test cookie to verify cookie functionality
@@ -146,21 +256,30 @@ export async function setupAuth(app: Express) {
     passport.authenticate(`replitauth:${req.hostname}`, {
       successReturnToOrRedirect: "/",
       failureRedirect: "/api/login",
-    })(req, res, (err) => {
+    })(req, res, (err: unknown) => {
       if (err) {
-        console.error("[Auth Callback Error]:", err);
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        authErrorLog("[Auth Callback Error]", {
+          message: errorMessage,
+          error: err,
+        });
         return res.redirect("/api/login");
       }
       
       // Log successful login
-      console.log("[Auth Success] User authenticated via callback");
+      authVerboseLog("[Auth Success] User authenticated via callback");
       
       // Special handling for session saving
-      req.session.save((saveErr) => {
+      req.session.save((saveErr: unknown) => {
         if (saveErr) {
-          console.error("[Session Save Error]:", saveErr);
+          const saveErrorMessage =
+            saveErr instanceof Error ? saveErr.message : String(saveErr);
+          authErrorLog("[Session Save Error]", {
+            message: saveErrorMessage,
+            error: saveErr,
+          });
         } else {
-          console.log("[Session Saved] Session ID:", req.sessionID);
+          authVerboseLog("[Session Saved] Auth session persisted");
         }
         
         // Redirect even if there was an error saving the session
@@ -181,29 +300,28 @@ export async function setupAuth(app: Express) {
   });
 }
 
-export const isAuthenticated: RequestHandler = async (req, res, next) => {
-  console.log("[Auth Debug] Authentication request:", {
+const replitIsAuthenticated: RequestHandler = async (req, res, next) => {
+  authVerboseLog("[Auth Debug] Authentication request:", {
     path: req.path,
     hasUser: !!req.user,
     isAuthenticated: req.isAuthenticated(),
-    sessionID: req.sessionID,
-    cookies: req.headers.cookie ? 'Present' : 'Missing'
+    hasSession: Boolean(req.session),
+    hasCookieHeader: Boolean(req.headers.cookie),
   });
   
   // Check if req.user exists
   if (!req.user) {
-    console.log("[Auth Error] No user in request");
+    authVerboseLog("[Auth Error] No user in request");
     return res.status(401).json({ 
       message: "Unauthorized",
       detail: "No user in session"
     });
   }
-  
   const user = req.user as any;
 
   // Double check authenticated status
   if (!req.isAuthenticated()) {
-    console.log("[Auth Error] Not authenticated");
+    authVerboseLog("[Auth Error] Not authenticated");
     
     // Don't redirect API calls - just return 401
     if (req.path.startsWith('/api/')) {
@@ -219,7 +337,7 @@ export const isAuthenticated: RequestHandler = async (req, res, next) => {
   
   // Check if token is expired
   if (!user.expires_at) {
-    console.log("[Auth Error] No expiration time in token");
+    authVerboseLog("[Auth Error] No expiration time in token");
     return res.status(401).json({ 
       message: "Unauthorized",
       detail: "Invalid token (no expiration)" 
@@ -230,16 +348,16 @@ export const isAuthenticated: RequestHandler = async (req, res, next) => {
   
   // If token is still valid, proceed
   if (now <= user.expires_at) {
-    console.log("[Auth Debug] Token valid, proceeding");
+    authVerboseLog("[Auth Debug] Token valid, proceeding");
     return next();
   }
   
-  console.log("[Auth Debug] Token expired, attempting refresh");
+  authVerboseLog("[Auth Debug] Token expired, attempting refresh");
   
   // Try to refresh the token
   const refreshToken = user.refresh_token;
   if (!refreshToken) {
-    console.log("[Auth Error] No refresh token available");
+    authVerboseLog("[Auth Error] No refresh token available");
     
     // Don't redirect API calls - just return 401
     if (req.path.startsWith('/api/')) {
@@ -254,14 +372,14 @@ export const isAuthenticated: RequestHandler = async (req, res, next) => {
   }
 
   try {
-    console.log("[Auth Debug] Refreshing token");
+    authVerboseLog("[Auth Debug] Refreshing token");
     const config = await getOidcConfig();
     const tokenResponse = await client.refreshTokenGrant(config, refreshToken);
     updateUserSession(user, tokenResponse);
-    console.log("[Auth Debug] Token refreshed successfully");
+    authVerboseLog("[Auth Debug] Token refreshed successfully");
     return next();
   } catch (error) {
-    console.error("[Auth Error] Token refresh failed:", error);
+    authErrorLog("[Auth Error] Token refresh failed", error);
     
     // Don't redirect API calls - just return 401
     if (req.path.startsWith('/api/')) {
@@ -275,3 +393,7 @@ export const isAuthenticated: RequestHandler = async (req, res, next) => {
     return res.redirect("/api/login");
   }
 };
+
+export const isAuthenticated: RequestHandler = replitEnabled
+  ? replitIsAuthenticated
+  : (_req, _res, next) => next();

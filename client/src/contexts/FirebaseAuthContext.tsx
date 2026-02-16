@@ -1,4 +1,4 @@
-import React, { createContext, useState, useEffect, useContext, ReactNode } from 'react';
+import React, { createContext, useState, useEffect, useContext, ReactNode, useRef } from 'react';
 import { 
   User, 
   createUserWithEmailAndPassword, 
@@ -17,11 +17,12 @@ import { useToast } from '@/hooks/use-toast';
 interface FirebaseAuthContextType {
   currentUser: User | null;
   loading: boolean;
+  authReady: boolean;
   signUp: (email: string, password: string) => Promise<User>;
   logIn: (email: string, password: string) => Promise<User>;
   logOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
-  getToken: () => Promise<string | null>;
+  getToken: (forceRefresh?: boolean) => Promise<string | null>;
   sendEmailVerification: (user: User) => Promise<void>;
   isEmailVerified: boolean;
 }
@@ -30,6 +31,7 @@ interface FirebaseAuthContextType {
 export const FirebaseAuthContext = createContext<FirebaseAuthContextType>({
   currentUser: null,
   loading: true,
+  authReady: false,
   signUp: async () => { throw new Error('Not implemented'); },
   logIn: async () => { throw new Error('Not implemented'); },
   logOut: async () => { throw new Error('Not implemented'); },
@@ -50,18 +52,46 @@ interface FirebaseAuthProviderProps {
 export const FirebaseAuthProvider: React.FC<FirebaseAuthProviderProps> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [authReady, setAuthReady] = useState(false);
   const { toast } = useToast();
+  const isDevEnv = process.env.NODE_ENV !== 'production';
+  const authInitRef = useRef(false);
+  const authReadyRef = useRef(false);
+
+  useEffect(() => {
+    console.log('[AuthProvider] mounted');
+    return () => {
+      console.log('[AuthProvider] unmounted');
+    };
+  }, []);
 
   // Handle Firebase auth state changes
   useEffect(() => {
+    if (authInitRef.current) {
+      if (isDevEnv) {
+        console.log('[Firebase Auth] Initialization already completed (skipping)');
+      }
+      return;
+    }
+    authInitRef.current = true;
+
     // Track last token update to prevent spamming Firebase
     let lastTokenUpdate = 0;
     const TOKEN_UPDATE_COOLDOWN = 300000; // 5 minutes
     
     const unsubscribe = onAuthStateChanged(auth, async user => {
-      console.log('[Firebase Auth] Auth state changed:', user ? `UID: ${user.uid}` : 'No user');
+      if (isDevEnv) {
+        console.log('[Firebase Auth] Auth state changed:', user ? `UID: ${user.uid}` : 'No user');
+      }
       setCurrentUser(user);
       setLoading(false);
+      if (!authReadyRef.current) {
+        authReadyRef.current = true;
+        setAuthReady(true);
+        console.log('[Firebase Auth] authReady=true');
+      } else {
+        setAuthReady(true);
+      }
       
       // Update token manager with the current user's token
       if (user) {
@@ -72,18 +102,24 @@ export const FirebaseAuthProvider: React.FC<FirebaseAuthProviderProps> = ({ chil
           
           // Don't refresh token on auth state change if we're seeing quota errors
           if (quotaState.hasQuotaError && now - quotaState.lastErrorTime < 300000) {
-            console.log('[Firebase Auth] Skipping token refresh after auth state change due to recent quota errors');
+            if (isDevEnv) {
+              console.log('[Firebase Auth] Skipping token refresh after auth state change due to recent quota errors');
+            }
             return;
           }
           
           if (shouldForceRefresh) {
-            console.log('[Firebase Auth] Getting fresh token after auth state change');
+            if (isDevEnv) {
+              console.log('[Firebase Auth] Getting fresh token after auth state change');
+            }
             // Get fresh token and store it in token manager
             try {
               const token = await getIdToken(user, true);
               tokenManager.setToken(token);
               lastTokenUpdate = now;
-              console.log('[Firebase Auth] Updated token in token manager');
+              if (isDevEnv) {
+                console.log('[Firebase Auth] Updated token in token manager');
+              }
             } catch (refreshError: any) {
               // Check for quota exceeded errors
               const isQuotaError = refreshError?.code === 'auth/quota-exceeded' || 
@@ -114,7 +150,7 @@ export const FirebaseAuthProvider: React.FC<FirebaseAuthProviderProps> = ({ chil
               }
               // Don't clear existing token in either case
             }
-          } else {
+          } else if (isDevEnv) {
             console.log('[Firebase Auth] Skipping token refresh on auth state change - too soon:', 
               `${Math.round(timeSinceLastUpdate/1000)}s since last refresh`);
           }
@@ -125,7 +161,9 @@ export const FirebaseAuthProvider: React.FC<FirebaseAuthProviderProps> = ({ chil
       } else {
         // Clear token on logout/no user
         tokenManager.setToken(null);
-        console.log('[Firebase Auth] Cleared token in token manager');
+        if (isDevEnv) {
+          console.log('[Firebase Auth] Cleared token in token manager');
+        }
         
         // Reset quota error state on logout
         quotaState.hasQuotaError = false;
@@ -135,8 +173,11 @@ export const FirebaseAuthProvider: React.FC<FirebaseAuthProviderProps> = ({ chil
     });
 
     // Cleanup subscription
-    return () => unsubscribe();
-  }, [toast]); // Add toast dependency
+    return () => {
+      authInitRef.current = false;
+      unsubscribe();
+    };
+  }, [toast, isDevEnv]); // Add toast dependency
 
   // Sign up function
   const signUp = async (email: string, password: string): Promise<User> => {
@@ -164,7 +205,9 @@ export const FirebaseAuthProvider: React.FC<FirebaseAuthProviderProps> = ({ chil
       // Get fresh token immediately after login
       const token = await getIdToken(userCredential.user, true);
       tokenManager.setToken(token);
-      console.log('[Firebase Auth] Token set after login');
+      if (isDevEnv) {
+        console.log('[Firebase Auth] Token set after login');
+      }
       
       return userCredential.user;
     } catch (error: any) {
@@ -183,7 +226,9 @@ export const FirebaseAuthProvider: React.FC<FirebaseAuthProviderProps> = ({ chil
     try {
       // Clear token before signing out
       tokenManager.setToken(null);
-      console.log('[Firebase Auth] Token cleared on logout');
+      if (isDevEnv) {
+        console.log('[Firebase Auth] Token cleared on logout');
+      }
       
       await signOut(auth);
       toast({
@@ -229,7 +274,7 @@ export const FirebaseAuthProvider: React.FC<FirebaseAuthProviderProps> = ({ chil
   };
 
   // Debug mode flag (only in development)
-  const DEBUG = process.env.NODE_ENV === 'development';
+  const DEBUG = isDevEnv;
   
   /**
    * Smart token refresh logic:
@@ -285,13 +330,7 @@ export const FirebaseAuthProvider: React.FC<FirebaseAuthProviderProps> = ({ chil
       
       if (token) {
         // Only log token info in dev mode to avoid sensitive data in production logs
-        if (DEBUG) {
-          console.log('[Firebase Auth] Token retrieved successfully:', {
-            length: token.length,
-            tokenStart: `${token.substring(0, 10)}...`,
-            tokenEnd: `...${token.substring(token.length - 10)}`
-          });
-        }
+        DEBUG && console.log('[Firebase Auth] Token retrieved successfully', { length: token.length });
         
         // Update token manager (which handles expiry tracking and sessionStorage persistence)
         tokenManager.setToken(token);
@@ -371,6 +410,7 @@ export const FirebaseAuthProvider: React.FC<FirebaseAuthProviderProps> = ({ chil
   const value: FirebaseAuthContextType = {
     currentUser,
     loading,
+    authReady,
     signUp,
     logIn,
     logOut,

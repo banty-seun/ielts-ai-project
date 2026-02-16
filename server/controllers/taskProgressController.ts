@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import { storage } from '../storage';
 import { v4 as uuidv4 } from 'uuid';
 import { generateListeningScriptForTask } from '../openai';
+import { resolveSessionMinutesFromTask } from '../services/sessionDuration';
+import { ensureSegmentsForTaskProgress } from '../services/progressSegments';
 
 // Batch initialize task progress records
 export const batchInitializeTaskProgress = async (req: any, res: Response) => {
@@ -33,7 +35,23 @@ export const batchInitializeTaskProgress = async (req: any, res: Response) => {
     
     // Get weekly plan to check for pre-generated scripts
     const weeklyPlan = await storage.getWeeklyStudyPlan(weeklyPlanId);
-    const preGeneratedScripts = (weeklyPlan?.planData as any)?.preGeneratedScripts || [];
+
+    if (!weeklyPlan) {
+      return res.status(404).json({
+        success: false,
+        message: "Weekly plan not found. Cannot initialize task progress without a valid plan."
+      });
+    }
+
+    if (weeklyPlan.userId !== userId) {
+      console.warn(`[Task Progress API] User ${userId} attempted to initialize tasks for plan ${weeklyPlanId} owned by ${weeklyPlan.userId}`);
+      return res.status(403).json({
+        success: false,
+        message: "You don't have permission to initialize tasks for this weekly plan"
+      });
+    }
+
+    const preGeneratedScripts = (weeklyPlan.planData as any)?.preGeneratedScripts || [];
     
     // Batch initialize task progress records
     const results = await storage.batchInitializeTaskProgress(
@@ -54,16 +72,25 @@ export const batchInitializeTaskProgress = async (req: any, res: Response) => {
         
         if (matchingScript) {
           try {
+            const sessionMinutes = resolveSessionMinutesFromTask(task);
             await storage.updateTaskContent(task.id, {
               scriptText: matchingScript.scriptText,
               accent: matchingScript.accent,
               scriptType: matchingScript.scriptType,
               difficulty: matchingScript.difficulty,
-              duration: matchingScript.duration
+              duration: sessionMinutes,
+              topicDomain: matchingScript.topicDomain,
+              contextLabel: matchingScript.contextLabel,
+              scenarioOverview: matchingScript.scenarioOverview,
+              estimatedDurationSec: matchingScript.estimatedDurationSec,
+              taskTitle: matchingScript.generatedTitle || task.taskTitle
             });
             
             await storage.updateTaskStatus(task.id, "script-ready");
-            console.log(`[Task Progress API] Applied pre-generated script to "${task.taskTitle}"`);
+            task.taskTitle = matchingScript.generatedTitle || task.taskTitle;
+            task.accent = matchingScript.accent ?? task.accent;
+            task.scriptType = matchingScript.scriptType ?? task.scriptType;
+            console.log(`[Task Progress API] Applied pre-generated script to "${matchingScript.generatedTitle || task.taskTitle}"`);
           } catch (error) {
             console.error(`[Task Progress API] Error applying script to "${task.taskTitle}":`, error);
           }
@@ -72,11 +99,13 @@ export const batchInitializeTaskProgress = async (req: any, res: Response) => {
     }
     
     console.log(`[Task Progress API] Successfully initialized ${results.length} task progress records`);
+
+    const ensuredResults = await Promise.all(results.map((task: any) => ensureSegmentsForTaskProgress(task)));
     
     return res.status(200).json({
       success: true,
       message: `Successfully initialized ${results.length} task progress records`,
-      results
+      results: ensuredResults
     });
   } catch (error: any) {
     console.error('[Task Progress API] Error in batch initialize:', error);
@@ -125,10 +154,11 @@ export const getTaskProgressById = async (req: any, res: Response) => {
       });
     }
     
-    // Return the task progress record
+    const ensured = await ensureSegmentsForTaskProgress(taskProgress);
+
     return res.status(200).json({
       success: true,
-      taskProgress
+      taskProgress: ensured
     });
   } catch (error: any) {
     console.error('[Task Progress API] Error fetching task progress by ID:', error);
@@ -259,12 +289,14 @@ export const startTask = async (req: any, res: Response) => {
           
           if (scriptResult.success) {
             // Update task with generated script
+            const sessionMinutes = resolveSessionMinutesFromTask(taskProgressRecord);
             await storage.updateTaskContent(id, {
               scriptText: scriptResult.scriptText!,
               accent: scriptResult.accent!,
               scriptType: scriptResult.scriptType!,
               difficulty: scriptResult.difficulty!,
-              duration: scriptResult.estimatedDuration!
+              duration: sessionMinutes,
+              estimatedDurationSec: scriptResult.estimatedDurationSec
             });
             
             console.log(`[Task Progress API] Fallback script generated successfully for "${taskProgressRecord.taskTitle}"`);
@@ -280,6 +312,7 @@ export const startTask = async (req: any, res: Response) => {
     
     // Mark the task as in progress
     const updatedTaskProgress = await storage.markTaskAsInProgress(id, progressData);
+    const ensured = await ensureSegmentsForTaskProgress(updatedTaskProgress);
     
     console.log('[Task Progress API] Task successfully marked as in progress:', {
       id: updatedTaskProgress.id,
@@ -290,7 +323,7 @@ export const startTask = async (req: any, res: Response) => {
     return res.status(200).json({
       success: true,
       message: "Task marked as in progress",
-      taskProgress: updatedTaskProgress
+      taskProgress: ensured
     });
   } catch (error: any) {
     console.error('[Task Progress API] Error marking task as in progress:', error);

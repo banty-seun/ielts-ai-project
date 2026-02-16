@@ -1,11 +1,7 @@
 import { Switch, Route, Redirect } from "wouter";
-import { queryClient } from "./lib/queryClient";
-import { QueryClientProvider } from "@tanstack/react-query";
-import { GoogleOAuthProvider } from "@react-oauth/google";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
-import { FirebaseAuthProvider } from "@/contexts/FirebaseAuthContext";
 import NotFound from "@/pages/not-found";
 import Home from "@/pages/Home";
 import Auth from "@/pages/auth";
@@ -17,10 +13,10 @@ import Onboarding from "@/pages/onboarding";
 import Dashboard from "@/pages/dashboard";
 import Calendar from "@/pages/calendar";
 import Practice from "@/pages/practice";
+import ListeningSession from "@/pages/listening-session";
 import DebugPage from "@/pages/debug";
 import DebugToken from "@/pages/debug-token";
 import ErrorTest from "@/pages/error-test";
-import { useMemo } from "react";
 
 const AuthRedirect = () => {
   return <Redirect to="/auth" />;
@@ -57,6 +53,12 @@ const ProtectedDebugToken = () => (
   </ProtectedRoute>
 );
 
+const ProtectedListeningSession = () => (
+  <ProtectedRoute requireOnboarding={true}>
+    <ListeningSession />
+  </ProtectedRoute>
+);
+
 function Router() {
   return (
     <Switch>
@@ -65,7 +67,9 @@ function Router() {
       <Route path="/login" component={Login} />
       <Route path="/dashboard" component={ProtectedDashboard} />
       <Route path="/dashboard/calendar" component={ProtectedCalendar} />
+      <Route path="/practice/:progressId" component={ProtectedPractice} />
       <Route path="/practice/:week/:day" component={ProtectedPractice} />
+      <Route path="/listening-session" component={ProtectedListeningSession} />
       <Route path="/verify-email" component={VerifyEmail} />
       <Route path="/verify-success" component={VerifySuccess} />
       <Route path="/verify-handler" component={VerifyHandler} />
@@ -82,16 +86,10 @@ function Router() {
 
 function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <GoogleOAuthProvider clientId={import.meta.env.VITE_GOOGLE_CLIENT_ID || ""}>
-        <FirebaseAuthProvider>
-          <TooltipProvider>
-            <Toaster />
-            <Router />
-          </TooltipProvider>
-        </FirebaseAuthProvider>
-      </GoogleOAuthProvider>
-    </QueryClientProvider>
+    <TooltipProvider>
+      <Toaster />
+      <Router />
+    </TooltipProvider>
   );
 }
 
