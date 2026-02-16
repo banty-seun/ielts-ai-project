@@ -29,6 +29,10 @@ export interface OnboardingData {
     dailyCommitment: '30mins' | '1hour' | '2hours+' | null;
     schedule: 'weekday' | 'weekend' | 'both' | null;
     style: 'ai-guided' | 'self-paced' | 'mixed' | null;
+    listeningDurations?: {
+      weekday?: number | null;
+      weekend?: number | null;
+    };
   };
   
   // Current step tracking
@@ -37,6 +41,8 @@ export interface OnboardingData {
 }
 
 // Define the initial state
+const DEFAULT_SESSION_MINUTES = 30;
+
 const initialOnboardingData: OnboardingData = {
   fullName: '',
   phoneNumber: '',
@@ -51,12 +57,16 @@ const initialOnboardingData: OnboardingData = {
   },
   immigrationGoal: null,
   studyPreferences: {
-    dailyCommitment: null,
-    schedule: null,
-    style: null
+    dailyCommitment: '30mins',
+    schedule: 'both',
+    style: 'ai-guided',
+    listeningDurations: {
+      weekday: DEFAULT_SESSION_MINUTES,
+      weekend: DEFAULT_SESSION_MINUTES,
+    },
   },
   currentStep: 1,
-  totalSteps: 8 // Updated from 9 to 8 steps
+  totalSteps: 7
 };
 
 // Define action types

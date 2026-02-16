@@ -7,6 +7,8 @@ vite.config.ts.*
 *.tar.gz
 .env
 .env.local
+client/.env
+server/.env
 
 # Replit agent dumps
 attached_assets/

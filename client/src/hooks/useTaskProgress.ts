@@ -1,8 +1,10 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getQueryFn } from "@/lib/queryClient";
-import { queryClient, tokenManager } from "@/lib/queryClient";
+import { getQueryFn, queryClient } from "@/lib/queryClient";
 import { sharedTracker } from "@/lib/trackers";
+import { SESSION_START_KEY } from "@shared/constants";
+import { useFirebaseAuthContext } from "@/contexts/FirebaseAuthContext";
+import { patchFreshWithAuth, postFreshWithAuth } from "@/lib/apiClient";
 
 // Debug toggle
 const DEBUG = Boolean((window as any).__DEBUG__);
@@ -20,6 +22,7 @@ export interface TaskProgress {
   taskTitle: string;
   status: 'not-started' | 'in-progress' | 'completed';
   progressData?: any;
+  duration?: number; // Session duration in minutes (from normalized task)
   startedAt?: string;
   completedAt?: string;
   createdAt: string;
@@ -44,6 +47,21 @@ export interface TaskProgressResponse {
 }
 
 // Return type for our hook
+export interface StartTaskPayload {
+  weeklyPlanId: string;
+  weekNumber?: number;
+  dayNumber: number;
+  taskTitle: string;
+  skill?: string;
+  planEntry?: Record<string, any>;
+}
+
+export interface StartTaskResponse {
+  id: string;
+  duration: number;
+  progressData?: any;
+}
+
 export interface UseTaskProgressResult {
   taskProgress: TaskProgress[];
   isLoading: boolean;
@@ -53,7 +71,7 @@ export interface UseTaskProgressResult {
   refetch: () => Promise<any>;
   createTaskProgress: (data: { weeklyPlanId: string; weekNumber: number; dayNumber: number; taskTitle: string }) => Promise<TaskProgressResponse>;
   updateTaskStatus: (data: { taskId: string; status: 'not-started' | 'in-progress' | 'completed'; progressData?: any }) => Promise<TaskProgressResponse>;
-  startTask: (data: { taskId: string; progressData?: any }) => Promise<TaskProgressResponse>;
+  startTask: (data: StartTaskPayload) => Promise<StartTaskResponse>;
   completeTask: (data: { taskId: string; progressData?: any }) => Promise<TaskProgressResponse>;
 }
 
@@ -67,7 +85,7 @@ const defaultTaskProgressResult: UseTaskProgressResult = {
   refetch: async () => ({}),
   createTaskProgress: async () => ({ success: false }),
   updateTaskStatus: async () => ({ success: false }),
-  startTask: async () => ({ success: false }),
+  startTask: async () => ({ id: '', duration: 0 }),
   completeTask: async () => ({ success: false }),
 };
 
@@ -88,6 +106,18 @@ export function useTaskProgress(
     : { ...taskIdOrOptions, enabled: opts?.enabled ?? taskIdOrOptions?.enabled };
   
   const { weeklyPlanId, progressId, onSuccess, onError, enabled } = options;
+  const { getToken } = useFirebaseAuthContext();
+  const ensureAuthToken = useCallback(async () => {
+    const token = await getToken();
+    if (token) {
+      return token;
+    }
+    const forced = await getToken(true);
+    if (forced) {
+      return forced;
+    }
+    throw new Error('Not authenticated. Please sign in again.');
+  }, [getToken]);
   // Add hasFetchedRef to track if we've already fetched
   const hasFetchedRef = useRef(false);
   
@@ -275,30 +305,12 @@ export function useTaskProgress(
       console.log('[TaskProgress] Creating task progress:', data);
       // Track the request in Firestore tracking
       sharedTracker.trackWrite('task_progress', 1);
-      
-      // Token is now retrieved directly in the header
-      
-      const response = await fetch('/api/firebase/task-progress', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${tokenManager.getToken()}`
-        },
-        body: JSON.stringify(data),
-      });
-      
-      if (!response.ok) {
-        let msg: string;
-        try {
-          const body = await response.json();
-          msg = body.message || JSON.stringify(body);
-        } catch {
-          msg = response.statusText || await response.text() || 'Unknown error';
-        }
-        throw new Error(`Failed to create task progress (${response.status}): ${msg}`);
-      }
-      
-      return await response.json();
+
+      return postFreshWithAuth<TaskProgressResponse>(
+        '/api/firebase/task-progress',
+        data,
+        getToken
+      );
     },
     onSuccess: (data) => {
       console.log('[TaskProgress] Task progress created successfully:', data);
@@ -317,27 +329,11 @@ export function useTaskProgress(
       // Track this operation
       sharedTracker.trackWrite('task_progress', 1);
       
-      const response = await fetch(`/api/firebase/task-progress/${data.taskId}`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${tokenManager.getToken()}`
-        },
-        body: JSON.stringify({ status: data.status, progressData: data.progressData }),
-      });
-      
-      if (!response.ok) {
-        let msg: string;
-        try {
-          const body = await response.json();
-          msg = body.message || JSON.stringify(body);
-        } catch {
-          msg = response.statusText || await response.text() || 'Unknown error';
-        }
-        throw new Error(`Failed to update task status (${response.status}): ${msg}`);
-      }
-      
-      return await response.json();
+      return patchFreshWithAuth<TaskProgressResponse>(
+        `/api/firebase/task-progress/${data.taskId}`,
+        { status: data.status, progressData: data.progressData },
+        getToken
+      );
     },
     onSuccess: (data) => {
       console.log('[TaskProgress] Task status updated successfully:', data);
@@ -346,41 +342,38 @@ export function useTaskProgress(
     },
   });
 
-  const startTaskMutation = useMutation<
-    TaskProgressResponse,
-    Error,
-    { taskId: string; progressData?: any }
-  >({
-    mutationFn: async (data) => {
-      console.log('[TaskProgress] Starting task:', data);
-      // Track this operation
+  const startTaskMutation = useMutation<StartTaskResponse, Error, StartTaskPayload>({
+    mutationFn: async (payload) => {
+      console.log('[TaskProgress] Starting task via /api/task-progress/start', payload);
       sharedTracker.trackWrite('task_progress', 1);
-      
-      const response = await fetch(`/api/firebase/task-progress/${data.taskId}/start`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${tokenManager.getToken()}`
-        },
-        body: JSON.stringify({ progressData: data.progressData }),
+
+      console.log('[STARTTASK] posting', {
+        weeklyPlanId: payload.weeklyPlanId,
+        weekNumber: payload.weekNumber,
+        dayNumber: payload.dayNumber,
       });
-      
-      if (!response.ok) {
-        let msg: string;
-        try {
-          const body = await response.json();
-          msg = body.message || JSON.stringify(body);
-        } catch {
-          msg = response.statusText || await response.text() || 'Unknown error';
-        }
-        throw new Error(`Failed to start task (${response.status}): ${msg}`);
+
+      const tokenBefore = await getToken();
+      console.log('[STARTTASK] token present?', Boolean(tokenBefore), 'len=', tokenBefore?.length ?? 0);
+      if (!tokenBefore) {
+        throw new Error('No auth token available. Please sign in again.');
       }
-      
-      return await response.json();
+
+      const response = await postFreshWithAuth<StartTaskResponse>(
+        '/api/task-progress/start',
+        payload,
+        getToken
+      );
+
+      console.log('[STARTTASK] success', {
+        weeklyPlanId: payload.weeklyPlanId,
+        dayNumber: payload.dayNumber,
+        progressId: response?.id,
+      });
+
+      return response;
     },
-    onSuccess: (data) => {
-      console.log('[TaskProgress] Task started successfully:', data);
-      // Invalidate the query to refresh the data
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey });
     },
   });
@@ -394,28 +387,12 @@ export function useTaskProgress(
       console.log('[TaskProgress] Completing task:', data);
       // Track this operation
       sharedTracker.trackWrite('task_progress', 1);
-      
-      const response = await fetch(`/api/firebase/task-progress/${data.taskId}/complete`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${tokenManager.getToken()}`
-        },
-        body: JSON.stringify({ progressData: data.progressData }),
-      });
-      
-      if (!response.ok) {
-        let msg: string;
-        try {
-          const body = await response.json();
-          msg = body.message || JSON.stringify(body);
-        } catch {
-          msg = response.statusText || await response.text() || 'Unknown error';
-        }
-        throw new Error(`Failed to complete task (${response.status}): ${msg}`);
-      }
-      
-      return await response.json();
+
+      return patchFreshWithAuth<TaskProgressResponse>(
+        `/api/firebase/task-progress/${data.taskId}/complete`,
+        { progressData: data.progressData },
+        getToken
+      );
     },
     onSuccess: (data) => {
       console.log('[TaskProgress] Task completed successfully:', data);
@@ -442,11 +419,10 @@ export function useTaskProgress(
   );
 
   const startTask = useCallback(
-    async (data: { taskId: string; progressData?: any }): Promise<TaskProgressResponse> => {
-      console.log('[TaskProgress] Starting task via callback:', data);
+    async (data: StartTaskPayload): Promise<StartTaskResponse> => {
       return startTaskMutation.mutateAsync(data);
     },
-    [startTaskMutation]
+    [startTaskMutation],
   );
 
   const completeTask = useCallback(
@@ -624,3 +600,34 @@ export function useInitializeTaskProgress(weeklyPlanId: string, tasks: any[] = [
     isInitializing 
   };
 }
+
+export const seedSessionStart = (
+  progressId: string,
+  userId: string,
+  ymd: string,
+): { key: string; startMs: number } | null => {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  if (!progressId || !userId || !ymd) {
+    return null;
+  }
+  const key = SESSION_START_KEY(userId, ymd, progressId);
+  const current = window.localStorage.getItem(key);
+  const parsed = Number(current);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return { key, startMs: parsed };
+  }
+  const now = Date.now();
+  window.localStorage.setItem(key, String(now));
+  return { key, startMs: now };
+};
+
+export const readSessionStart = (key: string): number | null => {
+  if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
+    return null;
+  }
+  const raw = window.localStorage.getItem(key);
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+};

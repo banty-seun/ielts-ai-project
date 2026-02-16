@@ -1,10 +1,14 @@
-import express, { type Request, Response, NextFunction } from "express";
+import "./env";
+import express, { type Request, type Response, type NextFunction } from "express";
+import os from "node:os";
+import net from "node:net";
+import dns from "node:dns";
+import { pathToFileURL } from "node:url";
+import { type Server } from "http";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
-import { getTaskProgressById } from "./controllers/getTaskProgressController";
-import { verifyFirebaseAuth, ensureFirebaseUser } from "./firebaseAuth";
 
-const app = express();
+export const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
@@ -38,80 +42,123 @@ app.use((req, res, next) => {
   next();
 });
 
-// The task progress endpoint is now properly registered in routes.ts
-// No need for a duplicate route here
+let baseServer: Server | null = null;
+let routesConfigured = false;
+let assetsConfigured = false;
 
-(async () => {
-  const server = await registerRoutes(app);
-
-  // Log all registered routes in development mode for debugging
-  if (process.env.NODE_ENV === 'development') {
-    const routes: { method: string; path: string }[] = [];
-    
-    app._router.stack.forEach((middleware: any) => {
-      if (middleware.route) {
-        // Routes registered directly on the app
-        const path = middleware.route.path;
-        const methods = Object.keys(middleware.route.methods)
-          .filter((method) => middleware.route.methods[method])
-          .map((method) => method.toUpperCase());
-        
-        methods.forEach((method) => {
-          routes.push({ method, path });
-        });
-      } else if (middleware.name === 'router') {
-        // Router middleware
-        middleware.handle.stack.forEach((handler: any) => {
-          if (handler.route) {
-            const path = handler.route.path;
-            const methods = Object.keys(handler.route.methods)
-              .filter((method) => handler.route.methods[method])
-              .map((method) => method.toUpperCase());
-            
-            methods.forEach((method) => {
-              routes.push({ method, path: middleware.regexp.source + path });
-            });
-          }
-        });
-      }
-    });
-    
-    // Group and log API routes
-    const apiRoutes = routes.filter(r => r.path.includes('/api'));
-    
-    console.log('\n=== API ROUTES ===');
-    apiRoutes.forEach(route => {
-      console.log(`${route.method} ${route.path}`);
-    });
-    console.log('=== END API ROUTES ===\n');
+async function ensureRoutesConfigured() {
+  if (routesConfigured && baseServer) {
+    return baseServer;
   }
 
-  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-    const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
+  if (!routesConfigured) {
+    baseServer = await registerRoutes(app);
+    routesConfigured = true;
 
-    res.status(status).json({ message });
-    throw err;
-  });
+    app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
+      const status = err.status || err.statusCode || 500;
+      const message = err.message || "Internal Server Error";
+      const url = req.originalUrl ?? req.url;
 
-  // importantly only setup vite in development and after
-  // setting up all the other routes so the catch-all route
-  // doesn't interfere with the other routes
+      log(`[Error] ${req.method} ${url} -> ${status} "${message}"`);
+      if (status >= 500) {
+        console.error(err);
+      }
+
+      if (!res.headersSent) {
+        res.status(status).json({ message });
+      }
+    });
+  }
+
+  return baseServer;
+}
+
+async function ensureAssetsConfigured() {
+  if (assetsConfigured || !baseServer) {
+    return;
+  }
+
   if (app.get("env") === "development") {
-    await setupVite(app, server);
+    await setupVite(app, baseServer);
   } else {
     serveStatic(app);
   }
 
-  // ALWAYS serve the app on port 5000
-  // this serves both the API and the client.
-  // It is the only port that is not firewalled.
-  const port = 5000;
-  server.listen({
-    port,
-    host: "0.0.0.0",
-    reusePort: true,
-  }, () => {
-    log(`serving on port ${port}`);
+  assetsConfigured = true;
+}
+
+export async function prepareApp(options: { withAssets?: boolean } = {}) {
+  const server = await ensureRoutesConfigured();
+  if (options.withAssets) {
+    await ensureAssetsConfigured();
+  }
+  return { app, server };
+}
+
+function logBindDiagnostics(host: string, port: number, envPortRaw: string | undefined, isNumeric: boolean) {
+  console.log("[BindDebug] host:", host, "port:", port, "envPortRaw:", envPortRaw, "isNumeric:", isNumeric);
+  console.log("[BindDebug] typeof host:", typeof host, "typeof port:", typeof port);
+  console.log("[BindDebug] net.isIP(host):", net.isIP(host));
+  dns.lookup(host, (err, addr, fam) => console.log("[BindDebug] dns.lookup:", { err: !!err, addr, fam }));
+  console.log("[BindDebug] process.versions:", process.versions);
+  console.log("[BindDebug] os.platform:", os.platform(), "os.release:", os.release());
+  console.log("[BindDebug] REPL* snapshot:", {
+    REPL_ID: !!process.env.REPL_ID,
+    REPLIT_DB_URL: !!process.env.REPLIT_DB_URL,
+    REPLIT_DEPLOYMENT: !!process.env.REPLIT_DEPLOYMENT,
+    REPLIT_APP_NAME: !!process.env.REPLIT_APP_NAME,
   });
-})();
+}
+
+export async function startServer(options: { host?: string; port?: number } = {}) {
+  const { server } = await prepareApp({ withAssets: true });
+  const srv = server;
+
+  if (!srv) {
+    throw new Error("HTTP server failed to initialize");
+  }
+
+  const envPort = process.env.PORT;
+  const host = options.host ?? process.env.HOST ?? "0.0.0.0";
+  const isNumeric = typeof envPort === "string" && /^\d+$/.test(envPort);
+  const fallbackPort = 5000;
+  const port = options.port ?? (isNumeric ? Number(envPort) : fallbackPort);
+
+  if (envPort && !isNumeric) {
+    console.warn(
+      `[Startup] Ignoring non-numeric PORT value "${envPort}". Defaulting to ${port}.`
+    );
+  }
+
+  logBindDiagnostics(host, port, envPort, isNumeric);
+
+  return await new Promise<Server>((resolve, reject) => {
+    srv.listen({ host, port }, () => {
+      log(`[Startup] Server listening on http://${host}:${port}`);
+      resolve(srv);
+    });
+
+    srv.on("error", (err: any) => {
+      console.error("[Startup] ERROR", err?.code, err?.message);
+      reject(err);
+    });
+  });
+}
+
+function isMainModule(metaUrl: string) {
+  if (!process.argv[1]) {
+    return false;
+  }
+  const mainUrl = pathToFileURL(process.argv[1]).href;
+  return metaUrl === mainUrl;
+}
+
+if (isMainModule(import.meta.url)) {
+  startServer().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
+
+export default app;

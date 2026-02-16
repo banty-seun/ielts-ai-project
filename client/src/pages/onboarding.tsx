@@ -73,10 +73,11 @@ function FullNameStep() {
   }, [onboardingData.phoneNumber]);
 
   const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    // Sanitize and trim input
-    const newName = e.target.value.trim();
-    dispatch({ type: 'SET_FULL_NAME', payload: newName });
-    setIsNameValid(!!newName);
+    // Allow spaces inside the name while collapsing accidental doubles
+    const rawValue = e.target.value;
+    const sanitizedValue = rawValue.replace(/\s{2,}/g, " ");
+    dispatch({ type: 'SET_FULL_NAME', payload: sanitizedValue });
+    setIsNameValid(sanitizedValue.trim().length > 0);
   };
 
   const handlePhoneChange = (value: string | undefined) => {
@@ -756,12 +757,6 @@ function SummaryStep() {
         throw new Error("Please select your immigration goal");
       }
 
-      if (!onboardingData.studyPreferences.dailyCommitment || 
-          !onboardingData.studyPreferences.schedule || 
-          !onboardingData.studyPreferences.style) {
-        throw new Error("Please complete all study preference selections");
-      }
-
       // Sanitize data for safe transmission
       const sanitizedData = {
         fullName: onboardingData.fullName.trim(),
@@ -781,10 +776,15 @@ function SummaryStep() {
         },
         immigrationGoal: onboardingData.immigrationGoal,
         studyPreferences: {
-          dailyCommitment: onboardingData.studyPreferences.dailyCommitment,
-          schedule: onboardingData.studyPreferences.schedule,
-          style: onboardingData.studyPreferences.style
-        }
+          dailyCommitment: '30mins',
+          schedule: 'both',
+          style: 'ai-guided',
+          sessionMinutes: 30,
+          listeningDurations: {
+            weekday: 30,
+            weekend: 30,
+          }
+        },
       };
 
       console.log('Generating AI plan with user data:', JSON.stringify(sanitizedData, null, 2));
@@ -822,8 +822,7 @@ function SummaryStep() {
         console.log('Onboarding marked as completed in database:', onboardingResponse);
         
         // Invalidate query caches to force a refetch of updated data
-        queryClient.invalidateQueries({ queryKey: ['/api/auth/onboarding-status'] });
-        queryClient.invalidateQueries({ queryKey: ['/api/firebase/auth/onboarding-status'] });
+        queryClient.invalidateQueries({ queryKey: ['onboardingStatus'] });
         queryClient.invalidateQueries({ queryKey: [`/api/weekly-plan/`] });
         queryClient.invalidateQueries({ queryKey: [`/api/firebase/weekly-plan/`] });
       } catch (onboardingError) {
@@ -968,7 +967,6 @@ const STEP_COMPONENTS = [
   TestDateStep,
   SkillRatingStep,
   ImmigrationGoalStep,
-  StudyPreferencesStep,
   SummaryStep
 ];
 
@@ -1072,40 +1070,8 @@ function OnboardingContainer() {
     );
   }
 
-  // Custom handler for StudyPreferencesStep (Step 7)
-  if (onboardingData.currentStep === 7) {
-    // Check if all three study preferences are set
-    const allPreferencesSet = 
-      !!onboardingData.studyPreferences.dailyCommitment && 
-      !!onboardingData.studyPreferences.schedule && 
-      !!onboardingData.studyPreferences.style;
-
-    return (
-      <OnboardingLayout 
-        showBackButton={true}
-        nextButtonText={buttonText}
-        // Enable Continue only if all three preferences are set
-        nextButtonDisabled={!allPreferencesSet}
-        onNext={() => {
-          // Log data for verification
-          console.log('Step 7 - Study Preferences Data:', {
-            studyPreferences: onboardingData.studyPreferences,
-            dailyCommitment: onboardingData.studyPreferences.dailyCommitment,
-            schedule: onboardingData.studyPreferences.schedule,
-            style: onboardingData.studyPreferences.style,
-            allSet: allPreferencesSet
-          });
-          goToNextStep();
-        }}
-        onBack={goToPreviousStep}
-      >
-        <CurrentStepComponent />
-      </OnboardingLayout>
-    );
-  }
-
-  // Custom handler for SummaryStep (Step 8)
-  if (onboardingData.currentStep === 8) {
+  // Custom handler for SummaryStep
+  if (onboardingData.currentStep === onboardingData.totalSteps) {
     return (
       <OnboardingLayout 
         showBackButton={true}

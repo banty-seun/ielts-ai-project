@@ -3,11 +3,35 @@ import { useFirebaseAuthContext } from '@/contexts/FirebaseAuthContext';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 
+type TokenInfoSuccess = {
+  issued: string;
+  expires: string;
+  userId: string;
+  email: string;
+};
+
+type TokenInfoError = {
+  error: string;
+};
+
+type TokenInfo = TokenInfoSuccess | TokenInfoError;
+
+const isTokenInfoError = (info: TokenInfo): info is TokenInfoError => "error" in info;
+
+type ApiResponse = {
+  status: number;
+  statusText: string;
+  data: unknown;
+  regularStatus?: number;
+  regularStatusText?: string;
+  regularData?: unknown;
+};
+
 export default function DebugTokenPage() {
   const { currentUser, getToken } = useFirebaseAuthContext();
   const [token, setToken] = useState<string | null>(null);
-  const [tokenInfo, setTokenInfo] = useState<any>(null);
-  const [apiResponse, setApiResponse] = useState<any>(null);
+  const [tokenInfo, setTokenInfo] = useState<TokenInfo | null>(null);
+  const [apiResponse, setApiResponse] = useState<ApiResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -109,12 +133,25 @@ export default function DebugTokenPage() {
       }
       
       // Add regular API response to the results
-      setApiResponse(prev => ({
-        ...prev,
-        regularStatus: regularResponse.status,
-        regularStatusText: regularResponse.statusText,
-        regularData: regularData
-      }));
+      setApiResponse(prev => {
+        if (!prev) {
+          return {
+            status: regularResponse.status,
+            statusText: regularResponse.statusText,
+            data: null,
+            regularStatus: regularResponse.status,
+            regularStatusText: regularResponse.statusText,
+            regularData: regularData
+          };
+        }
+
+        return {
+          ...prev,
+          regularStatus: regularResponse.status,
+          regularStatusText: regularResponse.statusText,
+          regularData: regularData
+        };
+      });
       
       setLoading(false);
     } catch (err) {
@@ -168,13 +205,20 @@ export default function DebugTokenPage() {
           )}
           
           {tokenInfo && (
-            <div className="bg-gray-50 p-4 mb-4 rounded border">
-              <h3 className="text-lg font-medium mb-2">Token Information</h3>
-              <p><strong>Issued:</strong> {tokenInfo.issued}</p>
-              <p><strong>Expires:</strong> {tokenInfo.expires}</p>
-              <p><strong>User ID:</strong> {tokenInfo.userId}</p>
-              <p><strong>Email:</strong> {tokenInfo.email}</p>
-            </div>
+            isTokenInfoError(tokenInfo) ? (
+              <div className="bg-yellow-50 p-4 mb-4 rounded border border-yellow-200">
+                <h3 className="text-lg font-medium mb-2">Token Information</h3>
+                <p className="text-yellow-800">{tokenInfo.error}</p>
+              </div>
+            ) : (
+              <div className="bg-gray-50 p-4 mb-4 rounded border">
+                <h3 className="text-lg font-medium mb-2">Token Information</h3>
+                <p><strong>Issued:</strong> {tokenInfo.issued}</p>
+                <p><strong>Expires:</strong> {tokenInfo.expires}</p>
+                <p><strong>User ID:</strong> {tokenInfo.userId}</p>
+                <p><strong>Email:</strong> {tokenInfo.email}</p>
+              </div>
+            )
           )}
           
           {token && (
