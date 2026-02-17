@@ -26,6 +26,20 @@ Implements Roadmap I (`I5.2`) release gate.
 2. Backfill dry-run evidence captured.
 3. Reconciliation mismatch rate within threshold.
 
+## Story E Schema Gate (Release Blocker)
+
+1. Migration apply log attached (`artifacts/listening-release/migration-apply.log`).
+2. Schema gate pass output attached (`artifacts/listening-release/schema-gate.log`).
+3. CI check `listening-schema-gate` passed against deployment/pre-prod mirror DB using secured secret `PREDEPLOY_DATABASE_URL`.
+4. Branch/release approval policy includes `listening-schema-gate` as a required check before release approval.
+
+## Story E Release Evidence (Required for Every Release)
+
+1. Schema gate output captured and attached.
+2. Migration application log captured and attached.
+3. One successful readiness probe captured (`npm run verify:listening-readiness`, `buildManifestReadiness` path).
+4. One successful `/api/firebase/task-content/:id` probe captured for a valid listening task (`npm run verify:listening-runtime`).
+
 ## QA + Drill
 
 1. `npm run check` passed.
