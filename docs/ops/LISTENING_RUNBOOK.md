@@ -106,3 +106,43 @@ Escalation:
    - keep canary promotion blocked unless health gates pass (`GET /api/listening/rollout/canary/promotion-check`).
 4. Run post-rollback verification:
    - `GET /api/listening/rollout/post-rollback-report` and execute listed recovery verification steps.
+
+## Story E Release Guardrail (Pre-Deploy Schema Gate)
+
+Required pre-deploy order (must not be changed):
+1. Apply DB migrations.
+2. Run listening schema gate.
+3. Start/restart server.
+
+Exact commands:
+1. `export DATABASE_URL="<target-deploy-or-preprod-db-url>"`
+2. `npm run db:migrate 2>&1 | tee artifacts/listening-release/migration-apply.log`
+3. `npm run guard:listening-schema 2>&1 | tee artifacts/listening-release/schema-gate.log`
+4. `LISTENING_DEPLOY_START_CMD="pm2 restart ielts-ai" npm run deploy:listening-guarded`
+
+One-shot guarded deploy command (enforces migration -> gate -> start/restart):
+1. `LISTENING_DEPLOY_START_CMD="pm2 restart ielts-ai" DATABASE_URL="<target-db-url>" npm run deploy:listening-guarded`
+
+Expected schema gate failure example:
+1. `[ListeningSchemaGate] FAIL missing required relation(s): listening_event_outbox (db=..., schema=public). Remediation: Apply migrations 0005_add_listening_section_state_table.sql, 0006_add_listening_orchestration_ops_tables.sql, and 0007_add_listening_event_outbox.sql, then rerun npm run guard:listening-schema.`
+
+Recovery steps when schema gate fails:
+1. Apply missing migrations in order:
+   - `psql "$DATABASE_URL" -f drizzle/0005_add_listening_section_state_table.sql`
+   - `psql "$DATABASE_URL" -f drizzle/0006_add_listening_orchestration_ops_tables.sql`
+   - `psql "$DATABASE_URL" -f drizzle/0007_add_listening_event_outbox.sql`
+2. Re-run:
+   - `npm run guard:listening-schema`
+3. Only after gate passes, continue with server start/restart.
+
+## Release Evidence Capture (Mandatory)
+
+For every listening release, attach all of the following artifacts:
+1. Schema gate output:
+   - `npm run guard:listening-schema 2>&1 | tee artifacts/listening-release/schema-gate.log`
+2. Migration application log:
+   - `npm run db:migrate 2>&1 | tee artifacts/listening-release/migration-apply.log`
+3. One successful readiness probe (`buildManifestReadiness` path):
+   - `npm run verify:listening-readiness 2>&1 | tee artifacts/listening-release/readiness-probe.log`
+4. One successful `/api/firebase/task-content/:id` probe for a valid listening task:
+   - `npm run verify:listening-runtime 2>&1 | tee artifacts/listening-release/task-content-probe.log`
