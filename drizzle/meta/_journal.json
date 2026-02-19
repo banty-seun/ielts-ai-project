@@ -1,0 +1,97 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1771366120458,
+      "tag": "0000_nasty_mephisto",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1771366120459,
+      "tag": "0001_add_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1771366120460,
+      "tag": "0002_add_constraints",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1771366120461,
+      "tag": "0003_add_more_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1771366120462,
+      "tag": "0004_add_task_progress_unique_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1771366120463,
+      "tag": "0005_add_listening_section_state_table",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1771366120464,
+      "tag": "0006_add_listening_orchestration_ops_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1771366120465,
+      "tag": "0007_add_listening_event_outbox",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1771366120466,
+      "tag": "0008_add_listening_validation_publish_controls",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1771366120467,
+      "tag": "0009_add_listening_rollout_observability_ops",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1771366120468,
+      "tag": "0010_add_listening_governance_registry_controls",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1771366120469,
+      "tag": "0011_add_listening_prompt_assignment",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1771366120470,
+      "tag": "0012_fix_listening_governance_ledger",
+      "breakpoints": true
+    }
+  ]
+}

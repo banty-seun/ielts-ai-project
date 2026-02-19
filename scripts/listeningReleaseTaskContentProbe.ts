@@ -67,6 +67,7 @@ async function run() {
   );
 
   await pool.end();
+  process.exit(0);
 }
 
 run().catch(async (error) => {

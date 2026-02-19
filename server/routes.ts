@@ -332,6 +332,8 @@ let governancePrerequisiteWarningEmitted = false;
 let listeningGovernanceReviewSchedulerStartedAtMs: number | null = null;
 let listeningGovernanceReviewLastRunAtMs: number | null = null;
 let listeningRolloutHydrationMissingTableWarningEmitted = false;
+let listeningBoostMissingRelationWarningEmitted = false;
+let listeningTaskContentPrefetchFallbackWarningEmitted = false;
 
 type RolloutAuditRecord = {
   actorId: string;
@@ -6299,7 +6301,24 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
           readiness.prefetchStatus !== PREFETCH_STATUS_QUEUED &&
           readiness.prefetchStatus !== PREFETCH_STATUS_RUNNING
         ) {
-          await enqueueListeningPrefetch(taskWithContent, userId);
+          try {
+            await enqueueListeningPrefetch(taskWithContent, userId);
+          } catch (error) {
+            if (!isMissingRelationError(error)) {
+              throw error;
+            }
+            if (!listeningTaskContentPrefetchFallbackWarningEmitted) {
+              listeningTaskContentPrefetchFallbackWarningEmitted = true;
+              console.warn("[Task Content API][Listening][PrefetchFallback]", {
+                taskId: taskWithContent.id,
+                userId,
+                code: (error as any)?.code ?? null,
+                message: (error as any)?.message ?? null,
+                remediation:
+                  "Apply listening migrations and rerun npm run guard:listening-schema",
+              });
+            }
+          }
         }
 
         const refreshedTask = await storage.getTaskWithContent(id);
@@ -7047,9 +7066,12 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
   // ========== SESSION MANAGEMENT ENDPOINTS ==========
 
   app.post('/api/listening/readiness/boost', verifyFirebaseAuth, ensureFirebaseUser, async (req: any, res) => {
+    let startupGateMode: ListeningStartupGateMode = LISTENING_STARTUP_GATE_BASE_MODE;
+    let taskProgressIdForFallback = String(req.body?.taskProgressId ?? "").trim();
     try {
       const userId = req.user.id;
       const taskProgressId = String(req.body?.taskProgressId ?? "").trim();
+      taskProgressIdForFallback = taskProgressId;
       const sourceRaw = String(req.body?.source ?? "session_open").trim().toLowerCase();
       const source = sourceRaw || "session_open";
 
@@ -7065,7 +7087,7 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
         return res.status(400).json({ success: false, message: "Boost is available for listening tasks only" });
       }
 
-      const startupGateMode = await resolveStartupGateModeForTaskRecord(task as TaskProgressRecord);
+      startupGateMode = await resolveStartupGateModeForTaskRecord(task as TaskProgressRecord);
       const readinessBefore = await buildManifestReadiness(task as TaskProgressRecord);
       const readyBefore = resolveStartupGateReady(startupGateMode, task as TaskProgressRecord, readinessBefore);
       const progressData = (task.progressData ?? {}) as Record<string, any>;
@@ -7115,6 +7137,29 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
         startup_gate_mode: startupGateMode,
       });
     } catch (error: any) {
+      if (isMissingRelationError(error)) {
+        if (!listeningBoostMissingRelationWarningEmitted) {
+          listeningBoostMissingRelationWarningEmitted = true;
+          console.warn("[ListeningBoost][SchemaFallback]", {
+            taskProgressId: taskProgressIdForFallback,
+            startupGateMode,
+            code: error?.code ?? null,
+            message: error?.message ?? null,
+            remediation:
+              "Apply listening migrations and rerun npm run guard:listening-schema",
+          });
+        }
+        return res.status(200).json({
+          success: true,
+          degraded: true,
+          enqueued: false,
+          ready: false,
+          phase: "queued",
+          etaSecs: LISTENING_STATUS_ETA_SECS,
+          startup_gate_mode: startupGateMode,
+          message: "Listening readiness boost temporarily unavailable; retrying with fallback mode.",
+        });
+      }
       console.error("[ListeningBoost][Error]", error);
       return res.status(500).json({
         success: false,

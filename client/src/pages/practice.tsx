@@ -996,6 +996,59 @@ const LegacyError = ({ title = "Error Loading Content", message = "Failed to loa
   </div>
 );
 
+const StartupEntryFallback = ({
+  phase,
+  etaSecs,
+  taskSummary,
+  sessionInfo,
+  onRefresh,
+}: {
+  phase: 'idle' | 'queued' | 'warming' | 'running' | 'error';
+  etaSecs?: number | null;
+  taskSummary?: {
+    id: string;
+    title: string;
+    activityType?: string;
+    scenario?: string;
+    sessionMinutes?: number | null;
+  } | null;
+  sessionInfo?: {
+    status: string;
+    retryCount: number;
+    message: string;
+    errorCode?: string | null;
+  } | null;
+  onRefresh: () => void;
+}) => (
+  <div className="container mx-auto px-4 py-12">
+    <div className="max-w-2xl mx-auto border rounded-lg p-6 bg-white">
+      <h2 className="text-xl font-semibold mb-2">Preparing listening session</h2>
+      <p className="text-gray-600 mb-4">
+        Part 1 is still warming up. You will enter the session once it is ready.
+      </p>
+      <SessionWarmup
+        phase={phase}
+        etaSecs={etaSecs}
+        taskSummary={taskSummary}
+        sessionInfo={sessionInfo}
+        skillType="listening"
+        onRefresh={onRefresh}
+      />
+      <div className="mt-4 flex gap-3">
+        <button
+          className="px-4 py-2 rounded bg-gray-900 text-white min-h-[44px]"
+          onClick={onRefresh}
+        >
+          Retry now
+        </button>
+        <WouterLink className="px-4 py-2 rounded border min-h-[44px]" href="/dashboard">
+          Back to Dashboard
+        </WouterLink>
+      </div>
+    </div>
+  </div>
+);
+
 // Legacy practice layout component
 const LegacyPracticeLayout = ({
   title,
@@ -1099,7 +1152,10 @@ export default function Practice() {
 
   // Extract content and readiness metadata
   const content = contentData?.data;
-  const ready = contentData?.ready ?? true;
+  const ready =
+    typeof contentData?.ready === 'boolean'
+      ? contentData.ready
+      : contentStatus === 'success';
   const phase = contentData?.phase ?? 'idle';
   const etaSecs = contentData?.etaSecs ?? null;
   const taskSummary = contentData?.taskSummary ?? null;
@@ -1114,7 +1170,7 @@ export default function Practice() {
       startupPollAttemptRef.current = 0;
       return;
     }
-    if (!(phase === "queued" || phase === "warming" || phase === "running" || phase === "error")) {
+    if (!(phase === "queued" || phase === "warming" || phase === "running")) {
       return;
     }
     const attempt = startupPollAttemptRef.current;
@@ -2621,20 +2677,15 @@ useEffect(() => {
   // Check if session is not ready and show preparing state
   if (!ready && (phase === 'queued' || phase === 'warming' || phase === 'running' || phase === 'error')) {
     return (
-      <LegacyPracticeLayout
-        title={taskSummary?.title ?? 'Preparing Listening Session'}
-        week={chipWeek}
-        day={chipDay}
-        questionsBlock={
-          <SessionWarmup
-            phase={phase as 'queued' | 'warming' | 'running' | 'error'}
-            etaSecs={etaSecs}
-            taskSummary={taskSummary}
-            sessionInfo={sessionInfo}
-            skillType="listening"
-            onRefresh={() => queryClient.invalidateQueries({ queryKey: [`/api/firebase/task-content/${taskId}`] })}
-          />
-        }
+      <StartupEntryFallback
+        phase={phase as 'queued' | 'warming' | 'running' | 'error'}
+        etaSecs={etaSecs}
+        taskSummary={taskSummary}
+        sessionInfo={sessionInfo}
+        onRefresh={() => {
+          startupPollAttemptRef.current = 0;
+          void queryClient.invalidateQueries({ queryKey: [`/api/firebase/task-content/${taskId}`] });
+        }}
       />
     );
   }

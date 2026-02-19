@@ -1,5 +1,5 @@
 // server/db.ts
-import 'dotenv/config';
+import "./env";
 import { Pool } from 'pg';
 import { drizzle, NodePgDatabase } from 'drizzle-orm/node-postgres';
 import * as schema from '../shared/schema'; // adjust path if yours differs

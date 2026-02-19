@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { cn } from '../../lib/utils';
 import { useWeeklyPlan } from '../../hooks/useWeeklyPlan';
@@ -18,7 +18,8 @@ import { useTaskProgress, seedSessionStart, readSessionStart } from '../../hooks
 import { useFirebaseAuthContext } from '@/contexts/FirebaseAuthContext';
 import { useAuth } from '@/hooks/useAuth';
 import { DEFAULT_SESSION_MINUTES, SESSION_START_KEY } from '@shared/constants';
-import { postFreshWithAuth } from '@/lib/apiClient';
+import { getFreshWithAuth, postFreshWithAuth } from '@/lib/apiClient';
+import { SessionWarmup } from '../SessionWarmup';
 
 function clearSessionStart(key: string) {
   if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
@@ -32,11 +33,54 @@ interface ListeningWeeklyPlanProps {
   className?: string;
 }
 
+type StartupWarmupPhase = 'idle' | 'queued' | 'warming' | 'running' | 'error';
+
+type StartupGateState = {
+  progressId: string;
+  targetPath: string;
+  taskTitle: string;
+  phase: StartupWarmupPhase;
+  etaSecs: number | null;
+  taskSummary: {
+    id: string;
+    title: string;
+    activityType?: string;
+    scenario?: string;
+    sessionMinutes?: number | null;
+  } | null;
+  sessionInfo: {
+    status: string;
+    retryCount: number;
+    message: string;
+    errorCode?: string | null;
+  } | null;
+  waiting: boolean;
+  attempt: number;
+};
+
+const parsePollEnvMs = (raw: unknown, fallback: number) => {
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : fallback;
+};
+
+const STARTUP_GATE_POLL_BASE_MS = parsePollEnvMs(import.meta.env.VITE_LISTENING_STARTUP_POLL_MS, 3000);
+const STARTUP_GATE_POLL_MAX_MS = parsePollEnvMs(import.meta.env.VITE_LISTENING_STARTUP_POLL_MAX_MS, 30000);
+const STARTUP_GATE_MAX_ATTEMPTS = 10;
+
+const normalizeStartupPhase = (value: unknown): StartupWarmupPhase => {
+  if (value === 'queued' || value === 'warming' || value === 'running' || value === 'error' || value === 'idle') {
+    return value;
+  }
+  return 'queued';
+};
+
 function ListeningWeeklyPlan({ weekNumber, className }: ListeningWeeklyPlanProps) {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const [localProgressOverrides, setLocalProgressOverrides] = useState<Record<string, string>>({});
   const [startingTaskKey, setStartingTaskKey] = useState<string | null>(null);
+  const [startupGateState, setStartupGateState] = useState<StartupGateState | null>(null);
+  const startupGateCancelledRef = useRef(false);
   const { startTask: startTaskProgress } = useTaskProgress({ enabled: false });
   const { user } = useAuth();
   const { currentUser, getToken, loading: authLoading, authReady } = useFirebaseAuthContext();
@@ -50,6 +94,12 @@ function ListeningWeeklyPlan({ weekNumber, className }: ListeningWeeklyPlanProps
   // Always define this once; earlier crash showed missing var.
   const canUseStorage = typeof window !== 'undefined' && !!window.localStorage;
   const [timeRefreshCounter, setTimeRefreshCounter] = useState(0);
+
+  useEffect(() => {
+    return () => {
+      startupGateCancelledRef.current = true;
+    };
+  }, []);
 
   // keep the 15s label refresh, but don't trigger unmounts/remounts
   useEffect(() => {
@@ -367,8 +417,157 @@ function ListeningWeeklyPlan({ weekNumber, className }: ListeningWeeklyPlanProps
     }
   };
 
+  const waitForStartupGateReady = useCallback(
+    async (params: { progressId: string; taskTitle: string; targetPath: string }) => {
+      startupGateCancelledRef.current = false;
+      let lastPhase: StartupWarmupPhase = 'queued';
+      let lastTaskSummary: StartupGateState['taskSummary'] = null;
+      let lastSessionInfo: StartupGateState['sessionInfo'] = null;
+      let lastEta: number | null = null;
+
+      for (let attempt = 0; attempt < STARTUP_GATE_MAX_ATTEMPTS; attempt += 1) {
+        if (startupGateCancelledRef.current) {
+          return { ready: false, cancelled: true };
+        }
+
+        try {
+          const data = await getFreshWithAuth<any>(
+            `/api/firebase/task-content/${encodeURIComponent(params.progressId)}`,
+            getToken,
+          );
+          const ready = Boolean(data?.ready);
+          const phase = normalizeStartupPhase(data?.phase);
+          const etaSecs = typeof data?.etaSecs === 'number' ? data.etaSecs : null;
+          const taskSummary = data?.taskSummary ?? null;
+          const sessionInfo = data?.session ?? null;
+
+          lastPhase = phase;
+          lastTaskSummary = taskSummary;
+          lastSessionInfo = sessionInfo;
+          lastEta = etaSecs;
+
+          setStartupGateState({
+            progressId: params.progressId,
+            targetPath: params.targetPath,
+            taskTitle: params.taskTitle,
+            phase,
+            etaSecs,
+            taskSummary,
+            sessionInfo,
+            waiting: !ready,
+            attempt: attempt + 1,
+          });
+
+          if (ready) {
+            return { ready: true, cancelled: false };
+          }
+        } catch (error: any) {
+          const message = error?.message || 'Unable to fetch startup readiness.';
+          lastPhase = 'error';
+          lastSessionInfo = {
+            status: 'error',
+            retryCount: attempt,
+            message,
+            errorCode: null,
+          };
+          setStartupGateState({
+            progressId: params.progressId,
+            targetPath: params.targetPath,
+            taskTitle: params.taskTitle,
+            phase: 'error',
+            etaSecs: null,
+            taskSummary: lastTaskSummary,
+            sessionInfo: lastSessionInfo,
+            waiting: true,
+            attempt: attempt + 1,
+          });
+        }
+
+        const delay = Math.min(
+          STARTUP_GATE_POLL_BASE_MS * Math.max(1, 2 ** attempt),
+          STARTUP_GATE_POLL_MAX_MS,
+        );
+        await new Promise((resolve) => {
+          window.setTimeout(resolve, delay);
+        });
+      }
+
+      if (startupGateCancelledRef.current) {
+        return { ready: false, cancelled: true };
+      }
+
+      setStartupGateState({
+        progressId: params.progressId,
+        targetPath: params.targetPath,
+        taskTitle: params.taskTitle,
+        phase: lastPhase === 'idle' ? 'queued' : lastPhase,
+        etaSecs: lastEta,
+        taskSummary: lastTaskSummary,
+        sessionInfo: lastSessionInfo ?? {
+          status: 'error',
+          retryCount: STARTUP_GATE_MAX_ATTEMPTS,
+          message: 'Part 1 is still warming up. Please retry in a moment.',
+          errorCode: null,
+        },
+        waiting: false,
+        attempt: STARTUP_GATE_MAX_ATTEMPTS,
+      });
+
+      return { ready: false, cancelled: false };
+    },
+    [getToken],
+  );
+
+  const enterPracticeWhenReady = useCallback(
+    async (params: { progressId: string; taskTitle: string; targetPath: string }) => {
+      setStartupGateState({
+        progressId: params.progressId,
+        targetPath: params.targetPath,
+        taskTitle: params.taskTitle,
+        phase: 'queued',
+        etaSecs: null,
+        taskSummary: null,
+        sessionInfo: null,
+        waiting: true,
+        attempt: 0,
+      });
+
+      const readinessResult = await waitForStartupGateReady(params);
+      if (!readinessResult.ready) {
+        if (!readinessResult.cancelled) {
+          toast({
+            title: 'Session warmup in progress',
+            description: 'Part 1 is still preparing. Use retry to continue once ready.',
+          });
+        }
+        return false;
+      }
+
+      setStartupGateState(null);
+      setLocation(params.targetPath);
+      return true;
+    },
+    [setLocation, toast, waitForStartupGateReady],
+  );
+
+  const handleStartupGateCancel = useCallback(() => {
+    startupGateCancelledRef.current = true;
+    setStartupGateState(null);
+  }, []);
+
+  const handleStartupGateRetry = useCallback(async () => {
+    if (!startupGateState) return;
+    startupGateCancelledRef.current = false;
+    await enterPracticeWhenReady({
+      progressId: startupGateState.progressId,
+      taskTitle: startupGateState.taskTitle,
+      targetPath: startupGateState.targetPath,
+    });
+  }, [enterPracticeWhenReady, startupGateState]);
+
   const handleTaskClick = async (task: ListeningTask) => {
     if (startingTaskKey && startingTaskKey === task.localKey) return;
+    if (startupGateState) return;
     if (authLoading || !authReady) return;
 
     if (!canUseStorage) {
@@ -428,7 +627,11 @@ function ListeningWeeklyPlan({ weekNumber, className }: ListeningWeeklyPlanProps
     await getToken();
 
     const targetPath = `/practice/${encodeURIComponent(progressId)}?progressId=${encodeURIComponent(progressId)}&taskId=${encodeURIComponent(task.id)}`;
-    setLocation(targetPath);
+    await enterPracticeWhenReady({
+      progressId,
+      taskTitle: task.title,
+      targetPath,
+    });
   };
 
   // Loading state
@@ -528,6 +731,46 @@ function ListeningWeeklyPlan({ weekNumber, className }: ListeningWeeklyPlanProps
 
       {/* Day Sections */}
       <CardContent className="p-5 md:p-6">
+        {startupGateState && (
+          <div className="mb-5 rounded-lg border border-blue-200 bg-blue-50 p-4">
+            <p className="text-sm font-semibold text-blue-900">
+              Preparing Part 1 before opening practice
+            </p>
+            <p className="mt-1 text-sm text-blue-800">
+              {startupGateState.taskTitle}
+            </p>
+            <SessionWarmup
+              phase={startupGateState.phase}
+              etaSecs={startupGateState.etaSecs}
+              taskSummary={startupGateState.taskSummary}
+              sessionInfo={startupGateState.sessionInfo}
+              skillType="listening"
+              onRefresh={() => {
+                if (startupGateState.waiting) return;
+                void handleStartupGateRetry();
+              }}
+            />
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                onClick={() => void handleStartupGateRetry()}
+                disabled={startupGateState.waiting}
+              >
+                Retry now
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleStartupGateCancel}
+              >
+                Cancel
+              </Button>
+              <span className="text-xs text-blue-700">
+                Poll attempt {startupGateState.attempt} of {STARTUP_GATE_MAX_ATTEMPTS}
+              </span>
+            </div>
+          </div>
+        )}
         <div className="divide-y divide-gray-100">
           {filteredDays.map((day) => (
             <DaySection
@@ -537,7 +780,7 @@ function ListeningWeeklyPlan({ weekNumber, className }: ListeningWeeklyPlanProps
               tasks={day.tasks}
               isAvailable={day.isAvailable}
               onTaskClick={handleTaskClick}
-              ctaDisabled={authLoading || !authReady}
+              ctaDisabled={authLoading || !authReady || Boolean(startupGateState)}
             />
           ))}
         </div>

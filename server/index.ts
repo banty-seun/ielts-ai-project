@@ -5,7 +5,9 @@ import net from "node:net";
 import dns from "node:dns";
 import { pathToFileURL } from "node:url";
 import { type Server } from "http";
+import { pool } from "./db";
 import { registerRoutes } from "./routes";
+import { runListeningReleaseSchemaGate } from "./services/listeningReleaseSchemaGate";
 import { setupVite, serveStatic, log } from "./vite";
 
 export const app = express();
@@ -45,6 +47,28 @@ app.use((req, res, next) => {
 let baseServer: Server | null = null;
 let routesConfigured = false;
 let assetsConfigured = false;
+let listeningSchemaPreflightComplete = false;
+
+async function ensureListeningSchemaPreflight() {
+  if (listeningSchemaPreflightComplete) {
+    return;
+  }
+
+  const enabled = process.env.LISTENING_STARTUP_SCHEMA_PREFLIGHT !== "false";
+  if (!enabled) {
+    log("[ListeningSchemaGate] SKIP startup preflight disabled via LISTENING_STARTUP_SCHEMA_PREFLIGHT=false");
+    listeningSchemaPreflightComplete = true;
+    return;
+  }
+
+  const result = await runListeningReleaseSchemaGate(pool);
+  if (!result.ok) {
+    throw new Error(result.message);
+  }
+
+  log(result.message);
+  listeningSchemaPreflightComplete = true;
+}
 
 async function ensureRoutesConfigured() {
   if (routesConfigured && baseServer) {
@@ -89,6 +113,7 @@ async function ensureAssetsConfigured() {
 }
 
 export async function prepareApp(options: { withAssets?: boolean } = {}) {
+  await ensureListeningSchemaPreflight();
   const server = await ensureRoutesConfigured();
   if (options.withAssets) {
     await ensureAssetsConfigured();
