@@ -222,6 +222,11 @@ export default function ListeningSession() {
           initialSessionState={sessionState}
           onSessionComplete={handleSessionComplete}
           onExit={handleExit}
+          onTransitionToNextTask={(nextProgressId) => {
+            setLocation(
+              `/practice/${encodeURIComponent(nextProgressId)}?progressId=${encodeURIComponent(nextProgressId)}&taskId=${encodeURIComponent(nextProgressId)}`,
+            );
+          }}
         />
       </div>
     </ProtectedRoute>

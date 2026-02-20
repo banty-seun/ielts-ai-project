@@ -40,7 +40,10 @@ interface UseListeningSessionResult {
   // Actions
   pause: () => Promise<void>;
   resume: () => Promise<void>;
-  submitAudio: (answers: any[], audioIndex: number) => Promise<{ feedback?: AdvisorFeedback; nextAudio?: any }>;
+  submitAudio: (
+    answers: any[],
+    audioIndex: number,
+  ) => Promise<{ feedback?: AdvisorFeedback; nextAudio?: any; nextProgressId?: string }>;
 
   // Auto-advance
   canAutoAdvance: boolean;
@@ -74,6 +77,7 @@ export function useListeningSession({
   onExpire,
   syncIntervalMs = 30000,
 }: UseListeningSessionOptions): UseListeningSessionResult {
+  const DEBUG = (import.meta as any).env?.DEV === true;
   const [sessionState, setSessionState] = useState<SessionState>(initialState);
   const [error, setError] = useState<string | null>(null);
   const syncTimerRef = useRef<number | null>(null);
@@ -120,10 +124,12 @@ export function useListeningSession({
         lastSyncRef.current = Date.now();
       }
     } catch (err: any) {
-      console.error('[useListeningSession] Sync error:', err);
+      if (DEBUG) {
+        console.error('[useListeningSession] Sync error:', err);
+      }
       setError(err.message || 'Failed to sync session');
     }
-  }, [taskId]);
+  }, [DEBUG, taskId]);
 
   /**
    * Pause the session
@@ -177,40 +183,25 @@ export function useListeningSession({
 
       const feedback: AdvisorFeedback = await feedbackResponse.json();
 
-      // Move to next audio
-      const nextAudioIndex = audioIndex + 1;
-      if (sessionState.prefetchedAudios && nextAudioIndex < sessionState.prefetchedAudios.length) {
-        // Next audio is already prefetched
-        setSessionState(prev => ({
-          ...prev,
-          currentAudioIndex: nextAudioIndex,
-        }));
-
-        return {
-          feedback,
-          nextAudio: sessionState.prefetchedAudios[nextAudioIndex],
-        };
-      } else {
-        // No more prefetched audios - session might be complete or need top-up
-        const consumedMs = sessionState.consumedMs + elapsed;
-        const remainingMs = (sessionState.durationMinutes * 60 * 1000) - consumedMs;
-
-        if (remainingMs <= 0) {
-          // Session complete
-          await syncWithServer(consumedMs, 'completed');
-          if (onComplete) {
-            onComplete();
-          }
+      // Section-aware progression now uses next-part readiness checks instead of
+      // advancing an in-memory prefetched audio list.
+      const consumedMs = sessionState.consumedMs + elapsed;
+      const remainingMs = (sessionState.durationMinutes * 60 * 1000) - consumedMs;
+      if (remainingMs <= 0) {
+        await syncWithServer(consumedMs, 'completed');
+        if (onComplete) {
+          onComplete();
         }
-
-        return { feedback };
       }
+      return { feedback };
     } catch (err: any) {
-      console.error('[useListeningSession] Submit error:', err);
+      if (DEBUG) {
+        console.error('[useListeningSession] Submit error:', err);
+      }
       setError(err.message || 'Failed to submit audio');
       return {};
     }
-  }, [sessionState, elapsed, syncWithServer, onComplete]);
+  }, [DEBUG, sessionState, elapsed, syncWithServer, onComplete]);
 
   /**
    * Request next audio (top-up generation)
@@ -272,19 +263,6 @@ export function useListeningSession({
 
       const data = await response.json();
 
-      if (data.ok && data.audio) {
-        setSessionState(prev => ({
-          ...prev,
-          prefetchedAudios: [...(prev.prefetchedAudios || []), data.audio],
-        }));
-        return {
-          ok: true,
-          audio: data.audio,
-          phase: data.phase,
-          startupGateMode: data.startup_gate_mode,
-        };
-      }
-
       if (data.ok && data.progressId) {
         return {
           ok: true,
@@ -301,11 +279,13 @@ export function useListeningSession({
         startupGateMode: data.startup_gate_mode,
       };
     } catch (err: any) {
-      console.error('[useListeningSession] Request next audio error:', err);
+      if (DEBUG) {
+        console.error('[useListeningSession] Request next audio error:', err);
+      }
       setError(err.message || 'Failed to request next audio');
       return { ok: false, reason: err.message };
     }
-  }, [taskId, remaining]);
+  }, [DEBUG, taskId, remaining]);
 
   /**
    * Can we auto-advance to next audio?

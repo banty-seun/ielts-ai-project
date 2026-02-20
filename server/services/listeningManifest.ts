@@ -6,7 +6,7 @@ import {
   buildListeningSectionManifest,
 } from "@shared/listening";
 import { validateTranscriptComplete } from "./content";
-import { publishListeningEvent } from "./listeningEvents";
+import { publishListeningEventDurably } from "./listeningEvents";
 import { upsertReadinessFromManifest } from "./listeningReadinessModel";
 import { normalizeLegacyQuestionsForApi } from "./listeningQuestionAdapters";
 import { resolveListeningQuestionContract } from "./listeningQuestionContractState";
@@ -340,7 +340,7 @@ export const buildSectionManifestFromTask = (
   });
 };
 
-export const publishSectionManifestEvent = (params: {
+export const publishSectionManifestEvent = async (params: {
   task: TaskProgress;
   traceId: string;
   correlationId: string;
@@ -364,7 +364,7 @@ export const publishSectionManifestEvent = (params: {
   });
   const manifest = params.manifest ?? buildSectionManifestFromTask(params.task);
 
-  const event = publishListeningEvent({
+  const publishedEvent = await publishListeningEventDurably({
     topic: LISTENING_EVENT_TOPICS.SECTION_EVENTS,
     eventType: LISTENING_EVENT_TYPES.SECTION_PUBLISHED,
     eventVersion: "1.0.0",
@@ -373,6 +373,7 @@ export const publishSectionManifestEvent = (params: {
     correlationId: params.correlationId,
     idempotencyKey: params.idempotencyKey,
     userId: params.task.userId,
+    taskProgressId: params.task.id,
     payload: {
       listening_session_id: params.task.id,
       section_id: params.task.id,
@@ -387,19 +388,21 @@ export const publishSectionManifestEvent = (params: {
     sectionId: params.task.id,
     sectionNo: 1,
     manifest,
-    lastEventId: event.event_id,
+    lastEventId: publishedEvent.event?.event_id,
   });
   void finishListeningStageSpan(publishSpan, {
     success: true,
     metadata: {
-      event_id: event.event_id,
+      event_id: publishedEvent.event?.event_id ?? null,
       manifest_version: manifest.manifest_version,
       publish_version: manifest.publish_version ?? null,
+      outbox_persisted: publishedEvent.outboxPersisted,
     },
   });
 
   return {
     manifest,
-    event,
+    event: publishedEvent.event,
+    outboxPersisted: publishedEvent.outboxPersisted,
   };
 };

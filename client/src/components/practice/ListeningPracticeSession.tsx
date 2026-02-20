@@ -14,6 +14,7 @@ interface ListeningPracticeSessionProps {
   initialSessionState: SessionState;
   onSessionComplete?: () => void;
   onExit?: () => void;
+  onTransitionToNextTask?: (progressId: string) => void;
 }
 
 interface AudioPackage {
@@ -42,6 +43,7 @@ export function ListeningPracticeSession({
   initialSessionState,
   onSessionComplete,
   onExit,
+  onTransitionToNextTask,
 }: ListeningPracticeSessionProps) {
   const rendererEnabled = (import.meta as any).env?.VITE_LISTENING_RENDERER_ENABLED === 'true';
   const [currentAudio, setCurrentAudio] = useState<AudioPackage | null>(null);
@@ -51,7 +53,8 @@ export function ListeningPracticeSession({
   const [feedback, setFeedback] = useState<AdvisorFeedbackType | null>(null);
   const [showFeedback, setShowFeedback] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isLoadingNextAudio, setIsLoadingNextAudio] = useState(false);
+  const [isLoadingNextTask, setIsLoadingNextTask] = useState(false);
+  const [transitionMessage, setTransitionMessage] = useState<string | null>(null);
 
   const {
     sessionState,
@@ -138,26 +141,33 @@ export function ListeningPracticeSession({
         setShowFeedback(true);
       }
 
-      if (result.nextAudio) {
-        // Auto-advance to next audio
-        setCurrentAudio(result.nextAudio);
-        setAnswers({});
-        setReplaysRemaining(result.nextAudio.replayLimit || 3);
-        setShowFeedback(false);
-      } else {
-        // No more audios - check if we can request a top-up
-        if (canAutoAdvance && remaining > 5 * 60 * 1000) {
-          setIsLoadingNextAudio(true);
-          const nextResult = await requestNextAudio();
-          setIsLoadingNextAudio(false);
+      // Section-aware progression uses task transitions rather than local audio package top-ups.
+      if (canAutoAdvance && remaining > 5 * 60 * 1000) {
+        setIsLoadingNextTask(true);
+        setTransitionMessage(null);
+        const nextResult = await requestNextAudio();
+        setIsLoadingNextTask(false);
 
-          if (nextResult.ok && nextResult.audio) {
-            setCurrentAudio(nextResult.audio);
-            setAnswers({});
-            setReplaysRemaining(nextResult.audio.replayLimit || 3);
-            setShowFeedback(false);
+        if (nextResult.ok && nextResult.progressId) {
+          const nextProgressId = String(nextResult.progressId);
+          if (onTransitionToNextTask) {
+            onTransitionToNextTask(nextProgressId);
+          } else if (typeof window !== 'undefined') {
+            window.location.href = `/practice/${encodeURIComponent(nextProgressId)}?progressId=${encodeURIComponent(nextProgressId)}&taskId=${encodeURIComponent(nextProgressId)}`;
           }
+          return;
         }
+
+        if (nextResult.ok && nextResult.audio) {
+          // Legacy fallback path while old response shape is still in migration window.
+          setCurrentAudio(nextResult.audio);
+          setAnswers({});
+          setReplaysRemaining(nextResult.audio.replayLimit || 3);
+          setShowFeedback(false);
+          return;
+        }
+
+        setTransitionMessage(nextResult.reason || 'Next part is still warming up. Please retry shortly.');
       }
     } catch (err) {
       console.error('[Session] Submit error:', err);
@@ -325,11 +335,16 @@ export function ListeningPracticeSession({
           )}
 
           {/* Loading next audio */}
-          {isLoadingNextAudio && (
+          {isLoadingNextTask && (
             <div className="flex items-center justify-center gap-2 text-indigo-600">
               <Loader2 className="w-4 h-4 animate-spin" />
-              <span className="text-sm">Generating next audio...</span>
+              <span className="text-sm">Preparing next part...</span>
             </div>
+          )}
+          {transitionMessage && (
+            <p role="status" aria-live="polite" className="text-sm text-amber-700">
+              {transitionMessage}
+            </p>
           )}
         </div>
 

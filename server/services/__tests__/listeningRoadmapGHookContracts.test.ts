@@ -23,3 +23,9 @@ test("useListeningSession requestNextAudio includes backoff and safe failure res
   assert.match(hookSource, /reason:\s*data\.reason \|\| 'Unknown error'/);
   assert.match(hookSource, /return \{ ok: false, reason: err\.message \};/);
 });
+
+test("useListeningSession progression is section-aware and does not append new audio packages in critical path", () => {
+  assert.match(hookSource, /if \(data\.ok && data\.progressId\)/);
+  assert.doesNotMatch(hookSource, /if \(data\.ok && data\.audio\)/);
+  assert.doesNotMatch(hookSource, /prefetchedAudios:\s*\[\.\.\.\(prev\.prefetchedAudios \|\| \[\]\), data\.audio\]/);
+});

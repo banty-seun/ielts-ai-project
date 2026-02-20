@@ -10,6 +10,7 @@ import {
   hasProcessedListeningIdempotencyKey,
   markProcessedListeningIdempotencyKey,
 } from "./listeningIdempotencyStore";
+import { persistListeningEventToOutbox } from "./listeningEventOutbox";
 
 const processedIdempotencyKeys = new Set<string>();
 
@@ -62,6 +63,92 @@ export const publishListeningEvent = <TPayload extends Record<string, unknown>>(
   });
 
   return envelope;
+};
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export const publishListeningEventDurably = async <TPayload extends Record<string, unknown>>(params: {
+  topic: ListeningEventTopic;
+  eventType: string;
+  eventVersion: string;
+  producer: string;
+  traceId: string;
+  correlationId: string;
+  idempotencyKey: string;
+  userId: string;
+  payload: TPayload;
+  taskProgressId: string;
+  maxOutboxAttempts?: number;
+  outboxRetryDelayMs?: number;
+  persistOutboxFn?: (args: {
+    taskProgressId: string;
+    userId: string;
+    topic: ListeningEventTopic;
+    event: ListeningEventEnvelope<TPayload>;
+  }) => Promise<unknown>;
+}) => {
+  let event: ListeningEventEnvelope<TPayload> | null = null;
+  try {
+    event = publishListeningEvent(params);
+  } catch (error: any) {
+    // Durable state transitions should not fail because event emission failed.
+    console.error("[ListeningEvent][PublishFailed]", {
+      topic: params.topic,
+      event_type: params.eventType,
+      trace_id: params.traceId,
+      correlation_id: params.correlationId,
+      message: error?.message ?? "unknown",
+    });
+    return {
+      event: null,
+      outboxPersisted: false,
+    };
+  }
+
+  const maxOutboxAttempts = Math.max(1, Number(params.maxOutboxAttempts ?? 3));
+  const outboxRetryDelayMs = Math.max(25, Number(params.outboxRetryDelayMs ?? 250));
+
+  const persistOutboxFn =
+    params.persistOutboxFn ??
+    (async (args: {
+      taskProgressId: string;
+      userId: string;
+      topic: ListeningEventTopic;
+      event: ListeningEventEnvelope<TPayload>;
+    }) => persistListeningEventToOutbox(args));
+
+  for (let attempt = 1; attempt <= maxOutboxAttempts; attempt += 1) {
+    try {
+      await persistOutboxFn({
+        taskProgressId: params.taskProgressId,
+        userId: params.userId,
+        topic: params.topic,
+        event,
+      });
+      return {
+        event,
+        outboxPersisted: true,
+      };
+    } catch (error: any) {
+      const finalAttempt = attempt >= maxOutboxAttempts;
+      console.error("[ListeningEvent][OutboxPersistFailed]", {
+        topic: params.topic,
+        event_type: params.eventType,
+        task_id: params.taskProgressId,
+        attempt,
+        max_attempts: maxOutboxAttempts,
+        message: error?.message ?? "unknown",
+      });
+      if (!finalAttempt) {
+        await sleep(outboxRetryDelayMs * attempt);
+      }
+    }
+  }
+
+  return {
+    event,
+    outboxPersisted: false,
+  };
 };
 
 export const consumeListeningEvent = async <TPayload extends Record<string, unknown>>(params: {

@@ -38,6 +38,45 @@ export const publishQueueDelayMetric = async (params: {
   return metric;
 };
 
+export const publishDeadLetterMetric = async (params: {
+  taskProgressId: string;
+  userId: string;
+  sectionNo: number;
+  action: "created" | "replayed";
+  errorCode?: string | null;
+  attempts?: number | null;
+  priorityClass?: ListeningPriorityClass;
+  metadata?: Record<string, unknown>;
+}) => {
+  const metric = await storage.insertListeningQueueMetric({
+    id: `lqm_${randomUUID()}`,
+    taskProgressId: params.taskProgressId,
+    userId: params.userId,
+    sectionNo: params.sectionNo,
+    priorityClass: params.priorityClass ?? "P3_LATER",
+    stepName: params.action === "created" ? "dlq_created" : "dlq_replayed",
+    metadata: {
+      error_code: params.errorCode ?? null,
+      attempts: Number(params.attempts ?? 0),
+      action: params.action,
+      emitted_at: new Date().toISOString(),
+      ...(params.metadata ?? {}),
+    },
+  });
+
+  const alertAttempts = Number(params.attempts ?? 0);
+  if (params.action === "created" && alertAttempts >= 3) {
+    console.error("[ListeningDLQ][Alert][REPEATED_FAILURE]", {
+      taskId: params.taskProgressId,
+      sectionNo: params.sectionNo,
+      attempts: alertAttempts,
+      errorCode: params.errorCode ?? null,
+    });
+  }
+
+  return metric;
+};
+
 export type TtsQualityMetricPayload = {
   taskProgressId: string;
   userId: string;

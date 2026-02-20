@@ -11,7 +11,7 @@ import {
   sectionLifecycleStateSchema,
 } from "@shared/listening";
 import { storage } from "../storage";
-import { publishListeningEvent } from "./listeningEvents";
+import { publishListeningEventDurably } from "./listeningEvents";
 import { upsertReadinessFromSectionState } from "./listeningReadinessModel";
 
 const SECTION_STATE_ROOT = "sectionLifecycle";
@@ -161,7 +161,7 @@ export const transitionListeningSectionState = async (params: {
     };
 
     const nextProgressData = await upsertListeningSectionState(params.task, seeded);
-    const event = publishListeningEvent({
+    const eventResult = await publishListeningEventDurably({
       topic: LISTENING_EVENT_TOPICS.SECTION_EVENTS,
       eventType: LISTENING_EVENT_TYPES.SECTION_STATE_CHANGED,
       eventVersion: "1.0.0",
@@ -170,6 +170,7 @@ export const transitionListeningSectionState = async (params: {
       correlationId: params.task.id,
       idempotencyKey: params.idempotencyKey,
       userId: params.task.userId,
+      taskProgressId: params.task.id,
       payload: {
         section_id: seeded.section_id,
         section_no: seeded.section_no,
@@ -183,7 +184,7 @@ export const transitionListeningSectionState = async (params: {
     await upsertReadinessFromSectionState({
       task: params.task,
       section: seeded,
-      lastEventId: event.event_id,
+      lastEventId: eventResult.event?.event_id,
     });
 
     return {
@@ -215,7 +216,7 @@ export const transitionListeningSectionState = async (params: {
   };
 
   const nextProgressData = await upsertListeningSectionState(params.task, nextRecord);
-  const event = publishListeningEvent({
+  const eventResult = await publishListeningEventDurably({
     topic: LISTENING_EVENT_TOPICS.SECTION_EVENTS,
     eventType: LISTENING_EVENT_TYPES.SECTION_STATE_CHANGED,
     eventVersion: "1.0.0",
@@ -224,6 +225,7 @@ export const transitionListeningSectionState = async (params: {
     correlationId: params.task.id,
     idempotencyKey: params.idempotencyKey,
     userId: params.task.userId,
+    taskProgressId: params.task.id,
     payload: {
       section_id: nextRecord.section_id,
       section_no: nextRecord.section_no,
@@ -237,7 +239,7 @@ export const transitionListeningSectionState = async (params: {
   await upsertReadinessFromSectionState({
     task: params.task,
     section: nextRecord,
-    lastEventId: event.event_id,
+    lastEventId: eventResult.event?.event_id,
   });
 
   return {

@@ -1020,8 +1020,8 @@ const StartupEntryFallback = ({
   } | null;
   onRefresh: () => void;
 }) => (
-  <div className="container mx-auto px-4 py-12">
-    <div className="max-w-2xl mx-auto border rounded-lg p-6 bg-white">
+  <div className="container mx-auto px-4 py-8 sm:py-12">
+    <div className="max-w-2xl mx-auto border rounded-lg p-5 sm:p-6 bg-white shadow-sm">
       <h2 className="text-xl font-semibold mb-2">Preparing listening session</h2>
       <p className="text-gray-600 mb-4">
         Part 1 is still warming up. You will enter the session once it is ready.
@@ -1034,14 +1034,17 @@ const StartupEntryFallback = ({
         skillType="listening"
         onRefresh={onRefresh}
       />
-      <div className="mt-4 flex gap-3">
+      <div className="mt-4 flex flex-col sm:flex-row gap-3">
         <button
-          className="px-4 py-2 rounded bg-gray-900 text-white min-h-[44px]"
+          className="px-4 py-2 rounded bg-gray-900 text-white min-h-[44px] w-full sm:w-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
           onClick={onRefresh}
         >
           Retry now
         </button>
-        <WouterLink className="px-4 py-2 rounded border min-h-[44px]" href="/dashboard">
+        <WouterLink
+          className="px-4 py-2 rounded border min-h-[44px] w-full sm:w-auto inline-flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+          href="/dashboard"
+        >
           Back to Dashboard
         </WouterLink>
       </div>
