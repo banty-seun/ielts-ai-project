@@ -6,6 +6,22 @@
 
 ---
 
+## Demo & Screenshots
+
+<!--
+  Drop product visuals here — recruiters and reviewers skim this first.
+  Suggested shots: onboarding, dashboard/weekly plan, timed listening runtime,
+  per-section result page, final personalized coach report.
+  Add images to a docs/screenshots/ folder and reference them, e.g.:
+
+  ![Dashboard](docs/screenshots/dashboard.png)
+  ![Listening runtime](docs/screenshots/listening-session.png)
+-->
+
+_Screenshots and a short demo walkthrough coming soon._
+
+---
+
 ## 1. The Problem
 
 IELTS candidates — especially those testing for immigration — face three recurring pain points:
