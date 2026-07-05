@@ -7,6 +7,7 @@ import {
 } from "../listeningPriority";
 
 test("priority source normalization maps expected values", () => {
+  assert.equal(normalizeListeningPrefetchSource("dashboard_open"), "dashboard_open");
   assert.equal(normalizeListeningPrefetchSource("dashboard_start_click"), "dashboard_start_click");
   assert.equal(normalizeListeningPrefetchSource("session_open"), "session_open");
   assert.equal(normalizeListeningPrefetchSource("transition_wait"), "transition_wait");
@@ -14,6 +15,10 @@ test("priority source normalization maps expected values", () => {
 });
 
 test("priority source signals boost start and dashboard intent correctly", () => {
+  const dashboardOpenSignals = deriveListeningPrioritySignalsFromSource("dashboard_open");
+  assert.equal(dashboardOpenSignals.dashboardOpenBoost, true);
+  assert.equal(dashboardOpenSignals.startClickBoost, false);
+
   const dashboardSignals = deriveListeningPrioritySignalsFromSource("dashboard_start_click");
   assert.equal(dashboardSignals.dashboardOpenBoost, true);
   assert.equal(dashboardSignals.startClickBoost, true);

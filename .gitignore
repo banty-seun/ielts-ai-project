@@ -1,17 +1,25 @@
-
 node_modules
 dist
 .DS_Store
 server/public
 vite.config.ts.*
 *.tar.gz
+
+# Environment / secrets — never commit any env file
 .env
-.env.local
+.env.*
+*.env
+*.env.*
 client/.env
 server/.env
+!.env.example
 
-# Replit agent dumps
-attached_assets/
+# Runtime logs
+*.log
+
+# Temp / build caches
+.tmp/
+.cache/
 
 # Replit agent dumps
 attached_assets/

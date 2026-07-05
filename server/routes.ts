@@ -1639,6 +1639,110 @@ const enqueueListeningPrefetch = async (
   });
 };
 
+const buildDashboardListeningReadinessSummary = async (task: TaskProgressRecord) => {
+  const readiness = await buildManifestReadiness(task);
+  const progressData = (task.progressData ?? {}) as Record<string, any>;
+  const sessionPrefetch = (progressData.sessionPrefetch ?? {}) as Record<string, any>;
+  const rawPhase = String(readiness.prefetchPhase ?? "idle").toLowerCase();
+  const status =
+    readiness.partReady || rawPhase === "ready" || rawPhase === "partial"
+      ? "ready"
+      : rawPhase === "warming" || rawPhase === "running"
+        ? "warming"
+        : rawPhase === "error"
+          ? "error"
+          : "queued";
+
+  return {
+    status,
+    prefetchStatus: String(readiness.prefetchStatus ?? sessionPrefetch.status ?? PREFETCH_STATUS_IDLE),
+    manifestStatus: String(readiness.manifestStatus ?? "warming"),
+    partReady: Boolean(readiness.partReady),
+    etaSecs: status === "queued" || status === "warming" ? LISTENING_STATUS_ETA_SECS : null,
+    updatedAt:
+      (readiness as any).readinessUpdatedAt ??
+      (typeof sessionPrefetch.updatedAt === "string" ? sessionPrefetch.updatedAt : null),
+    retryCount: Number(sessionPrefetch.retryCount ?? 0),
+    errorCode: sessionPrefetch.errorCode ?? null,
+    message:
+      typeof sessionPrefetch.message === "string" && sessionPrefetch.message.trim().length > 0
+        ? sessionPrefetch.message
+        : status === "ready"
+          ? "Ready to start"
+          : status === "error"
+            ? "Preparation failed"
+            : "Preparing in background",
+    attempts: Number(sessionPrefetch.retryCount ?? 0),
+    lastEventId: (readiness as any).readinessLastEventId ?? null,
+    state: (readiness as any).readinessState ?? null,
+  };
+};
+
+const shouldAutoBoostDashboardPrefetch = (task: TaskProgressRecord, readinessSummary: any) => {
+  if (String(task.skill ?? "").toLowerCase() !== "listening") return false;
+  if (task.status === "completed") return false;
+  if (readinessSummary?.partReady) return false;
+  const prefetchStatus = String(readinessSummary?.prefetchStatus ?? "").toLowerCase();
+  if (
+    prefetchStatus === PREFETCH_STATUS_QUEUED ||
+    prefetchStatus === PREFETCH_STATUS_RUNNING ||
+    prefetchStatus === PREFETCH_STATUS_READY
+  ) {
+    return false;
+  }
+  return true;
+};
+
+const sortListeningTasksForDashboardBoost = (records: TaskProgressRecord[]) => {
+  return [...records].sort((a, b) => {
+    const ad = Number(a.dayNumber ?? 999);
+    const bd = Number(b.dayNumber ?? 999);
+    if (ad !== bd) return ad - bd;
+    const ao = Number((((a.progressData ?? {}) as any).sessionOrder) ?? 1);
+    const bo = Number((((b.progressData ?? {}) as any).sessionOrder) ?? 1);
+    if (ao !== bo) return ao - bo;
+    const at = new Date((a.createdAt ?? a.updatedAt ?? 0) as any).getTime();
+    const bt = new Date((b.createdAt ?? b.updatedAt ?? 0) as any).getTime();
+    return at - bt;
+  });
+};
+
+const autoBoostListeningPrefetchFromDashboard = async (params: {
+  userId: string;
+  records: TaskProgressRecord[];
+  readinessByTaskId: Map<string, any>;
+  maxTasks?: number;
+}) => {
+  const candidates = sortListeningTasksForDashboardBoost(params.records).filter((task) =>
+    shouldAutoBoostDashboardPrefetch(task, params.readinessByTaskId.get(task.id)),
+  );
+  const selected = candidates.slice(0, Math.max(1, Math.min(4, Number(params.maxTasks ?? 2))));
+  const summary = {
+    source: "dashboard_open" as const,
+    considered: candidates.length,
+    attempted: selected.length,
+    enqueued: 0,
+    failed: 0,
+  };
+
+  for (const task of selected) {
+    try {
+      await enqueueListeningPrefetch(task, params.userId, { source: "dashboard_open" });
+      summary.enqueued += 1;
+    } catch (error) {
+      summary.failed += 1;
+      if (!isMissingRelationError(error)) {
+        console.warn("[ListeningDashboardBoost][Skipped]", {
+          taskId: task.id,
+          message: (error as any)?.message ?? "unknown",
+        });
+      }
+    }
+  }
+
+  return summary;
+};
+
 const getNextPartStatusForTask = async (task: TaskProgressRecord, userId: string) => {
   const progressData = (task.progressData ?? {}) as Record<string, any>;
   const batchId = typeof progressData.sessionBatchId === "string" ? progressData.sessionBatchId : null;
@@ -2168,9 +2272,8 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
     try {
       const userId = req.user.id;
       const { weeklyPlanId } = req.params;
-      
-      console.log(`[Task Progress API] GET task progress by weekly plan: ${weeklyPlanId} for user ${userId}`);
-      
+      const dashboardBoostEnabled = String(req.query?.dashboardBoost ?? "1") !== "0";
+
       // Fetch the weekly plan first to verify user has access
       const weeklyPlan = await storage.getWeeklyStudyPlan(weeklyPlanId);
       
@@ -2191,13 +2294,47 @@ export async function registerRoutes(app: express.Express): Promise<Server> {
       
       // Get all task progress records for this weekly plan
       const taskProgressRecords = await storage.getTaskProgressByWeeklyPlan(weeklyPlanId, userId);
-      
-      console.log(`[Task Progress API] Found ${taskProgressRecords.length} task progress records for weekly plan ${weeklyPlanId}`);
-      
-      const ensuredRecords = await ensureSegmentsForTasks(taskProgressRecords);
+
+      let ensuredRecords = await ensureSegmentsForTasks(taskProgressRecords);
+      let readinessByTaskId = new Map<string, any>();
+      for (const record of ensuredRecords as TaskProgressRecord[]) {
+        if (String(record.skill ?? "").toLowerCase() !== "listening") continue;
+        readinessByTaskId.set(record.id, await buildDashboardListeningReadinessSummary(record as TaskProgressRecord));
+      }
+
+      let dashboardPrefetchBoost = {
+        source: "dashboard_open" as const,
+        considered: 0,
+        attempted: 0,
+        enqueued: 0,
+        failed: 0,
+      };
+      if (dashboardBoostEnabled && ensuredRecords.length > 0) {
+        dashboardPrefetchBoost = await autoBoostListeningPrefetchFromDashboard({
+          userId,
+          records: ensuredRecords as TaskProgressRecord[],
+          readinessByTaskId,
+          maxTasks: 2,
+        });
+        if (dashboardPrefetchBoost.enqueued > 0) {
+          const refreshed = await storage.getTaskProgressByWeeklyPlan(weeklyPlanId, userId);
+          ensuredRecords = await ensureSegmentsForTasks(refreshed);
+          readinessByTaskId = new Map<string, any>();
+          for (const record of ensuredRecords as TaskProgressRecord[]) {
+            if (String(record.skill ?? "").toLowerCase() !== "listening") continue;
+            readinessByTaskId.set(record.id, await buildDashboardListeningReadinessSummary(record as TaskProgressRecord));
+          }
+        }
+      }
+
+      const taskProgressWithReadiness = (ensuredRecords as TaskProgressRecord[]).map((record) => ({
+        ...record,
+        listeningReadiness: readinessByTaskId.get(record.id) ?? null,
+      }));
       return res.status(200).json({
         success: true,
-        taskProgress: ensuredRecords
+        taskProgress: taskProgressWithReadiness,
+        dashboardPrefetchBoost,
       });
     } catch (error: any) {
       console.error('[Task Progress API] Error fetching task progress by weekly plan:', error);

@@ -1,5 +1,9 @@
 import { useEffect, useRef } from "react";
 
+const DEBUG_COUNTDOWN =
+  typeof window !== "undefined" &&
+  (Boolean((window as any).__DEBUG__) || (import.meta as any).env?.DEV === true);
+
 interface CountdownOpts {
   progressId?: string | number | null;
   totalMs: number;
@@ -24,7 +28,7 @@ export function useCountdownTimer({
   useEffect(() => {
     const prev = pausedRef.current;
     pausedRef.current = paused;
-    if (prev !== paused && startMsRef.current) {
+    if (DEBUG_COUNTDOWN && prev !== paused && startMsRef.current) {
       console.log(`[COUNTDOWN] ${paused ? "pause" : "resume"}`, {
         progressId,
         totalMs,
@@ -71,24 +75,20 @@ export function useCountdownTimer({
 
       const nextSecond = Math.floor(next / 1000);
       if (lastLoggedSecondRef.current !== nextSecond) {
-        console.log("[COUNTDOWN] tick", {
-          progressId,
-          totalMs,
-          startMs: startMsRef.current,
-          remainingMs: next,
-        });
         lastLoggedSecondRef.current = nextSecond;
       }
 
       rafId.current = requestAnimationFrame(loop);
     };
 
-    console.log("[COUNTDOWN] init", {
-      progressId,
-      totalMs,
-      startMs,
-      remainingMs: Math.max(0, totalMs - (Date.now() - startMs)),
-    });
+    if (DEBUG_COUNTDOWN) {
+      console.log("[COUNTDOWN] init", {
+        progressId,
+        totalMs,
+        startMs,
+        remainingMs: Math.max(0, totalMs - (Date.now() - startMs)),
+      });
+    }
 
     rafId.current = requestAnimationFrame(loop);
 

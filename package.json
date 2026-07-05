@@ -17,6 +17,7 @@
     "db:studio": "drizzle-kit studio",
     "guard:listening-schema": "node --import tsx scripts/listeningSchemaGate.ts",
     "verify:listening-readiness": "node --import tsx scripts/listeningReleaseReadinessProbe.ts",
+    "verify:listening-dashboard-boost": "node --import tsx scripts/listeningDashboardBoostProbe.ts",
     "verify:listening-runtime": "node --import tsx scripts/listeningReleaseTaskContentProbe.ts",
     "verify:listening-readiness-rebuild": "node --import tsx scripts/listeningReadinessRebuildProbe.ts",
     "verify:listening-readiness-replay-determinism": "node --import tsx scripts/listeningReadinessReplayDeterminismProbe.ts",

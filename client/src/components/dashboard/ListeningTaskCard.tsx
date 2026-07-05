@@ -3,6 +3,8 @@ import { cn } from '../../lib/utils';
 import { Headphones, Play, Pause, Clock, ArrowRight, RotateCcw } from 'lucide-react';
 import { Progress } from '../ui/progress';
 import { msToMMSS } from '@shared/constants';
+import type { ListeningRuntimeEntryState } from '@/lib/sessionKey';
+import { formatListeningWarmupLastUpdated } from '@/lib/listeningWarmupState';
 
 export interface ListeningTask {
   id: string;
@@ -49,6 +51,17 @@ export interface ListeningTask {
     remainingMs: number;
     currentAudioIndex: number;
   };
+  runtimeEntryState?: ListeningRuntimeEntryState;
+  readiness?: {
+    status: 'queued' | 'warming' | 'ready' | 'error';
+    etaSecs?: number | null;
+    updatedAt?: string | null;
+    retryCount?: number;
+    attempts?: number;
+    message?: string | null;
+    errorCode?: string | null;
+    partReady?: boolean;
+  } | null;
 }
 
 interface ListeningTaskCardProps {
@@ -59,6 +72,7 @@ interface ListeningTaskCardProps {
 }
 
 export default function ListeningTaskCard({ task, onClick, className, ctaDisabled = false }: ListeningTaskCardProps) {
+  const readinessStatus = task.readiness?.status ?? null;
   // Format duration from "6 min" to just "6 min", handle various formats
   const formatDuration = (duration: string) => {
     const match = duration.match(/(\d+)/);
@@ -83,6 +97,21 @@ export default function ListeningTaskCard({ task, onClick, className, ctaDisable
       if (task.sessionState.status === 'running') {
         return 'bg-blue-50 border-2 border-blue-500 animate-pulse';
       }
+    }
+    if (task.runtimeEntryState === 'warming_up') {
+      return 'bg-blue-50 border border-blue-200';
+    }
+    if (task.runtimeEntryState === 'ready_not_started') {
+      return 'bg-green-50 border border-green-200';
+    }
+    if (readinessStatus === 'warming' || readinessStatus === 'queued') {
+      return 'bg-blue-50 border border-blue-200';
+    }
+    if (readinessStatus === 'ready') {
+      return 'bg-green-50 border border-green-200';
+    }
+    if (readinessStatus === 'error') {
+      return 'bg-red-50 border border-red-200';
     }
 
     // Fall back to task status
@@ -171,6 +200,46 @@ export default function ListeningTaskCard({ task, onClick, className, ctaDisable
             </span>
           </>
         )}
+        {!task.sessionState && task.runtimeEntryState === 'warming_up' && (
+          <>
+            <span>•</span>
+            <span className="text-blue-700 font-medium flex items-center gap-1">
+              <Clock className="w-3 h-3" />
+              Preparing Part 1
+            </span>
+          </>
+        )}
+        {!task.sessionState && task.runtimeEntryState === 'ready_not_started' && (
+          <>
+            <span>•</span>
+            <span className="text-green-700 font-medium flex items-center gap-1">
+              <Play className="w-3 h-3" />
+              Ready to start
+            </span>
+          </>
+        )}
+        {!task.sessionState && !task.runtimeEntryState && readinessStatus && (
+          <>
+            <span>•</span>
+            <span
+              className={cn(
+                'font-medium flex items-center gap-1',
+                readinessStatus === 'ready' && 'text-green-700',
+                (readinessStatus === 'warming' || readinessStatus === 'queued') && 'text-blue-700',
+                readinessStatus === 'error' && 'text-red-700',
+              )}
+            >
+              <Clock className="w-3 h-3" />
+              {readinessStatus === 'ready'
+                ? 'Ready'
+                : readinessStatus === 'error'
+                  ? 'Preparation failed'
+                  : readinessStatus === 'warming'
+                    ? 'Preparing'
+                    : 'Queued'}
+            </span>
+          </>
+        )}
       </div>
 
       {/* Description */}
@@ -191,6 +260,47 @@ export default function ListeningTaskCard({ task, onClick, className, ctaDisable
             <Clock className="w-4 h-4" />
             <span>{formatTimeRemaining(task.sessionState.remainingMs)} remaining</span>
           </div>
+        </div>
+      )}
+      {!task.sessionState && (task.runtimeEntryState === 'warming_up' || task.runtimeEntryState === 'ready_not_started') && (
+        <div className="mt-3 p-3 bg-white border border-gray-200 rounded-lg space-y-1">
+          <div className="flex items-center gap-2 text-xs text-gray-600">
+            <Clock className="w-4 h-4" />
+            <span>
+              {task.runtimeEntryState === 'warming_up'
+                ? 'Preparing session assets (timer not started)'
+                : 'Ready to start (timer not started)'}
+            </span>
+          </div>
+        </div>
+      )}
+      {!task.sessionState && !task.runtimeEntryState && readinessStatus && (
+        <div className="mt-3 p-3 bg-white border border-gray-200 rounded-lg space-y-1">
+          <div className="flex items-center gap-2 text-xs text-gray-600">
+            <Clock className="w-4 h-4" />
+            <span>
+              {task.readiness?.message ||
+                (readinessStatus === 'ready'
+                  ? 'Ready to start'
+                  : readinessStatus === 'error'
+                    ? 'Preparation failed'
+                    : 'Preparing session assets in background')}
+            </span>
+          </div>
+          {(readinessStatus === 'warming' || readinessStatus === 'queued') && typeof task.readiness?.etaSecs === 'number' && (
+            <div className="text-xs text-blue-700">ETA ~{task.readiness.etaSecs}s</div>
+          )}
+          {readinessStatus === 'error' && (
+            <div className="text-xs text-red-700">
+              {task.readiness?.errorCode ? `Code: ${task.readiness.errorCode}` : 'Retry from dashboard or open preparation status'}
+            </div>
+          )}
+          {typeof task.readiness?.retryCount === 'number' && task.readiness.retryCount > 0 && (
+            <div className="text-xs text-gray-500">Retries: {task.readiness.retryCount}</div>
+          )}
+          {task.readiness?.updatedAt && (
+            <div className="text-xs text-gray-500">{formatListeningWarmupLastUpdated(task.readiness.updatedAt)}</div>
+          )}
         </div>
       )}
 
@@ -264,7 +374,15 @@ export default function ListeningTaskCard({ task, onClick, className, ctaDisable
                 : "text-indigo-600 hover:text-indigo-700"
             )}
           >
-            {task.isStarting ? 'Starting…' : 'Start Practice'}
+            {task.isStarting
+              ? 'Starting…'
+              : readinessStatus === 'ready'
+                ? 'Start now'
+                : readinessStatus === 'warming' || readinessStatus === 'queued'
+                  ? 'Preparing in background'
+                  : readinessStatus === 'error'
+                    ? 'View preparation status'
+                    : 'Start Practice'}
             <ArrowRight className="h-3 w-3" />
           </button>
         )}
@@ -279,7 +397,15 @@ export default function ListeningTaskCard({ task, onClick, className, ctaDisable
             disabled={disabled}
             className="text-xs text-blue-600 hover:text-blue-700 font-medium flex items-center gap-1 transition-colors"
           >
-            Continue
+            {task.runtimeEntryState === 'warming_up'
+              ? 'Preparing…'
+              : readinessStatus === 'warming' || readinessStatus === 'queued'
+                ? 'Preparing in background'
+              : task.runtimeEntryState === 'ready_not_started'
+                ? 'Start now'
+                : readinessStatus === 'ready'
+                  ? 'Start now'
+                : 'Continue'}
             <ArrowRight className="h-3 w-3" />
           </button>
         )}

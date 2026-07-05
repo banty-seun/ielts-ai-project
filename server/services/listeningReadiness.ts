@@ -15,7 +15,7 @@ const resolvePrefetchPhase = (status: string) => {
   if (status === PREFETCH_STATUS_QUEUED) return "queued";
   if (status === PREFETCH_STATUS_RUNNING) return "warming";
   if (status === PREFETCH_STATUS_ERROR) return "error";
-  if (status === PREFETCH_STATUS_READY_PARTIAL) return "partial";
+  if (status === PREFETCH_STATUS_READY_PARTIAL) return "ready";
   return status;
 };
 
@@ -62,5 +62,8 @@ export const buildManifestReadiness = async (task: TaskProgress, sectionId = tas
     manifest: readModel?.manifest ?? manifest,
     prefetchStatus,
     prefetchPhase: resolvePrefetchPhase(prefetchStatus),
+    readinessState: readModel?.state ?? null,
+    readinessUpdatedAt: readModel?.updatedAt ?? null,
+    readinessLastEventId: readModel?.lastEventId ?? null,
   };
 };

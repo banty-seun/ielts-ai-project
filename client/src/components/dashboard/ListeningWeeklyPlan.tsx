@@ -14,32 +14,28 @@ import { ListeningTask } from './ListeningTaskCard';
 import { addDays } from 'date-fns';
 import { getQueryFn } from '../../lib/queryClient';
 import { useToast } from '../../hooks/use-toast';
-import { useTaskProgress, seedSessionStart, readSessionStart } from '../../hooks/useTaskProgress';
+import { useTaskProgress } from '../../hooks/useTaskProgress';
 import { useFirebaseAuthContext } from '@/contexts/FirebaseAuthContext';
 import { useAuth } from '@/hooks/useAuth';
 import { DEFAULT_SESSION_MINUTES, SESSION_START_KEY } from '@shared/constants';
 import { getFreshWithAuth, postFreshWithAuth } from '@/lib/apiClient';
 import { SessionWarmup } from '../SessionWarmup';
-
-function clearSessionStart(key: string) {
-  if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
-    return;
-  }
-  window.localStorage.removeItem(key);
-}
+import { clearSessionStart, readSessionStart, type ListeningRuntimeEntryState } from '@/lib/sessionKey';
+import {
+  normalizeListeningWarmupPhase,
+  type ListeningWarmupPhase,
+} from '@/lib/listeningWarmupState';
 
 interface ListeningWeeklyPlanProps {
   weekNumber: number;
   className?: string;
 }
 
-type StartupWarmupPhase = 'idle' | 'queued' | 'warming' | 'running' | 'error';
-
 type StartupGateState = {
   progressId: string;
   targetPath: string;
   taskTitle: string;
-  phase: StartupWarmupPhase;
+  phase: ListeningWarmupPhase;
   etaSecs: number | null;
   taskSummary: {
     id: string;
@@ -56,7 +52,14 @@ type StartupGateState = {
   } | null;
   waiting: boolean;
   attempt: number;
+  ready: boolean;
+  lastUpdatedAt: string | null;
+  panelVisible: boolean;
+  backgroundPolling: boolean;
+  pollErrorCount: number;
 };
+
+type WarmupStatusByProgressId = Record<string, Omit<StartupGateState, 'panelVisible' | 'backgroundPolling' | 'pollErrorCount'>>;
 
 const parsePollEnvMs = (raw: unknown, fallback: number) => {
   const parsed = Number(raw);
@@ -66,11 +69,13 @@ const parsePollEnvMs = (raw: unknown, fallback: number) => {
 const STARTUP_GATE_POLL_BASE_MS = parsePollEnvMs(import.meta.env.VITE_LISTENING_STARTUP_POLL_MS, 3000);
 const STARTUP_GATE_POLL_MAX_MS = parsePollEnvMs(import.meta.env.VITE_LISTENING_STARTUP_POLL_MAX_MS, 30000);
 const STARTUP_GATE_MAX_ATTEMPTS = 10;
+const DASHBOARD_READINESS_POLL_MS = parsePollEnvMs(import.meta.env.VITE_LISTENING_DASHBOARD_READINESS_POLL_MS, 10000);
 
-const normalizeStartupPhase = (value: unknown): StartupWarmupPhase => {
-  if (value === 'queued' || value === 'warming' || value === 'running' || value === 'error' || value === 'idle') {
-    return value;
-  }
+const toDashboardCardReadinessStatus = (value: unknown): 'queued' | 'warming' | 'ready' | 'error' => {
+  const phase = normalizeListeningWarmupPhase(value);
+  if (phase === 'ready') return 'ready';
+  if (phase === 'error') return 'error';
+  if (phase === 'warming' || phase === 'running') return 'warming';
   return 'queued';
 };
 
@@ -80,7 +85,10 @@ function ListeningWeeklyPlan({ weekNumber, className }: ListeningWeeklyPlanProps
   const [localProgressOverrides, setLocalProgressOverrides] = useState<Record<string, string>>({});
   const [startingTaskKey, setStartingTaskKey] = useState<string | null>(null);
   const [startupGateState, setStartupGateState] = useState<StartupGateState | null>(null);
-  const startupGateCancelledRef = useRef(false);
+  const [warmupStatuses, setWarmupStatuses] = useState<WarmupStatusByProgressId>({});
+  const readyToastEmittedRef = useRef<Set<string>>(new Set());
+  const dashboardBoostedTaskIdsRef = useRef<Set<string>>(new Set());
+  const dashboardCardReadinessRef = useRef<Record<string, 'queued' | 'warming' | 'ready' | 'error'>>({});
   const { startTask: startTaskProgress } = useTaskProgress({ enabled: false });
   const { user } = useAuth();
   const { currentUser, getToken, loading: authLoading, authReady } = useFirebaseAuthContext();
@@ -96,9 +104,7 @@ function ListeningWeeklyPlan({ weekNumber, className }: ListeningWeeklyPlanProps
   const [timeRefreshCounter, setTimeRefreshCounter] = useState(0);
 
   useEffect(() => {
-    return () => {
-      startupGateCancelledRef.current = true;
-    };
+    readyToastEmittedRef.current.clear();
   }, []);
 
   // keep the 15s label refresh, but don't trigger unmounts/remounts
@@ -230,9 +236,22 @@ function ListeningWeeklyPlan({ weekNumber, className }: ListeningWeeklyPlanProps
 
       const progressOverride = localProgressOverrides[fallbackId];
       const progressId = progressOverride ?? linkedProgress?.id ?? null;
+      const warmupTracked = progressId ? warmupStatuses[progressId] : null;
 
       const status = linkedProgress?.status || task.status || 'not-started';
       const sessionState = linkedProgress?.progressData?.sessionState;
+      const prefetchStatus = String(linkedProgress?.progressData?.sessionPrefetch?.status ?? 'idle').toLowerCase();
+      const readinessPayload = linkedProgress?.listeningReadiness ?? null;
+      const readinessStatus = warmupTracked?.ready
+        ? 'ready'
+        : toDashboardCardReadinessStatus(
+            readinessPayload?.status ??
+              (prefetchStatus === 'ready_partial'
+                ? 'ready'
+                : prefetchStatus === 'running'
+                  ? 'warming'
+                  : prefetchStatus),
+          );
       const progressSegments = Array.isArray(linkedProgress?.progressData?.segments)
         ? linkedProgress.progressData.segments
         : [];
@@ -281,6 +300,45 @@ function ListeningWeeklyPlan({ weekNumber, className }: ListeningWeeklyPlanProps
         isStarting: startingTaskKey === fallbackId,
         assignedDate: typeof task.assignedDate === 'string' ? task.assignedDate : undefined,
         sequenceNumber: typeof task.sequenceNumber === 'number' ? task.sequenceNumber : undefined,
+        readiness: {
+          status: readinessStatus,
+          etaSecs:
+            typeof readinessPayload?.etaSecs === 'number'
+              ? readinessPayload.etaSecs
+              : readinessStatus === 'queued' || readinessStatus === 'warming'
+                ? 45
+                : null,
+          updatedAt:
+            warmupTracked?.lastUpdatedAt ??
+            (typeof readinessPayload?.updatedAt === 'string' ? readinessPayload.updatedAt : null) ??
+            (typeof linkedProgress?.progressData?.sessionPrefetch?.updatedAt === 'string'
+              ? linkedProgress.progressData.sessionPrefetch.updatedAt
+              : null),
+          retryCount: Number(
+            readinessPayload?.retryCount ??
+              linkedProgress?.progressData?.sessionPrefetch?.retryCount ??
+              warmupTracked?.sessionInfo?.retryCount ??
+              0,
+          ),
+          attempts: Number(
+            readinessPayload?.attempts ??
+              linkedProgress?.progressData?.sessionPrefetch?.retryCount ??
+              0,
+          ),
+          message:
+            warmupTracked?.sessionInfo?.message ??
+            (typeof readinessPayload?.message === 'string' ? readinessPayload.message : null) ??
+            (typeof linkedProgress?.progressData?.sessionPrefetch?.message === 'string'
+              ? linkedProgress.progressData.sessionPrefetch.message
+              : null),
+          errorCode:
+            warmupTracked?.sessionInfo?.errorCode ??
+            (typeof readinessPayload?.errorCode === 'string' ? readinessPayload.errorCode : null) ??
+            (typeof linkedProgress?.progressData?.sessionPrefetch?.errorCode === 'string'
+              ? linkedProgress.progressData.sessionPrefetch.errorCode
+              : null),
+          partReady: Boolean(readinessPayload?.partReady ?? warmupTracked?.ready),
+        },
         performanceCoachStatus: (() => {
           const statusFromPlan = task.performanceCoachStatus ?? null;
           const statusFromProgress = linkedProgress?.progressData?.performanceCoach?.latest?.closed_loop ?? null;
@@ -306,6 +364,20 @@ function ListeningWeeklyPlan({ weekNumber, className }: ListeningWeeklyPlanProps
           };
         })(),
       };
+      let runtimeEntryState: ListeningRuntimeEntryState | undefined;
+      if (sessionState?.status === 'running') {
+        runtimeEntryState = 'started';
+      } else if (sessionState?.status === 'paused') {
+        runtimeEntryState = 'paused';
+      } else if (warmupTracked && String(status) !== 'completed') {
+        runtimeEntryState = warmupTracked.ready ? 'ready_not_started' : 'warming_up';
+      } else if (status === 'in-progress') {
+        if (readinessStatus === 'queued' || readinessStatus === 'warming') {
+          runtimeEntryState = 'warming_up';
+        } else if (readinessStatus === 'ready') {
+          runtimeEntryState = 'ready_not_started';
+        }
+      }
 
       if (canUseStorage && userId && progressId && resolvedDurationMinutes > 0) {
         const sessionKey = SESSION_START_KEY(userId, todayYmd, progressId);
@@ -323,12 +395,14 @@ function ListeningWeeklyPlan({ weekNumber, className }: ListeningWeeklyPlanProps
                 remainingMs,
                 currentAudioIndex: 0,
               };
+              runtimeEntryState = 'paused';
             }
           } else {
             clearSessionStart(sessionKey);
           }
         }
       }
+      listeningTask.runtimeEntryState = runtimeEntryState;
 
       dayGroups[dayNumber].push(listeningTask);
     });
@@ -356,6 +430,7 @@ function ListeningWeeklyPlan({ weekNumber, className }: ListeningWeeklyPlanProps
     todayYmd,
     timeRefreshCounter,
     canUseStorage,
+    warmupStatuses,
   ]);
 
   // Filter to only show available days (or all if testing)
@@ -364,6 +439,101 @@ function ListeningWeeklyPlan({ weekNumber, className }: ListeningWeeklyPlanProps
     // Can filter later: return tasksByDay.filter(day => day.isAvailable || day.tasks.length > 0);
     return tasksByDay;
   }, [tasksByDay]);
+
+  const flattenedListeningTasks = useMemo(
+    () => filteredDays.flatMap((day) => day.tasks),
+    [filteredDays],
+  );
+
+  useEffect(() => {
+    if (authLoading || !authReady || progressLoading || !getToken) {
+      return;
+    }
+
+    const candidates = flattenedListeningTasks.filter((task) => {
+      if (!task.progressId) return false;
+      if (task.status === 'completed') return false;
+      const readinessStatus = task.readiness?.status ?? 'queued';
+      return readinessStatus === 'queued' || readinessStatus === 'warming' || readinessStatus === 'error';
+    });
+    const toBoost = candidates
+      .filter((task) => !dashboardBoostedTaskIdsRef.current.has(String(task.progressId)))
+      .slice(0, 3);
+
+    if (toBoost.length === 0) {
+      return;
+    }
+
+    toBoost.forEach((task) => {
+      if (task.progressId) {
+        dashboardBoostedTaskIdsRef.current.add(String(task.progressId));
+      }
+    });
+
+    let cancelled = false;
+    void Promise.allSettled(
+      toBoost.map((task) =>
+        postFreshWithAuth(
+          "/api/listening/readiness/boost",
+          {
+            taskProgressId: task.progressId,
+            source: "dashboard_open",
+          },
+          getToken,
+        ),
+      ),
+    ).then(() => {
+      if (!cancelled) {
+        void refetchProgress();
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authLoading, authReady, flattenedListeningTasks, getToken, progressLoading, refetchProgress]);
+
+  const hasPendingDashboardPreparation = useMemo(
+    () =>
+      flattenedListeningTasks.some((task) => {
+        if (!task.progressId) return false;
+        if (task.status === 'completed') return false;
+        const readinessStatus = task.readiness?.status ?? 'queued';
+        return readinessStatus === 'queued' || readinessStatus === 'warming';
+      }),
+    [flattenedListeningTasks],
+  );
+
+  useEffect(() => {
+    if (!authReady || progressLoading || !hasPendingDashboardPreparation) {
+      return;
+    }
+    const interval = window.setInterval(() => {
+      void refetchProgress();
+    }, DASHBOARD_READINESS_POLL_MS);
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [authReady, hasPendingDashboardPreparation, progressLoading, refetchProgress]);
+
+  useEffect(() => {
+    const nextStatuses: Record<string, 'queued' | 'warming' | 'ready' | 'error'> = {};
+    for (const task of flattenedListeningTasks) {
+      if (!task.progressId) continue;
+      const progressId = String(task.progressId);
+      const status = task.readiness?.status ?? 'queued';
+      nextStatuses[progressId] = status;
+      const prev = dashboardCardReadinessRef.current[progressId];
+      if (prev && prev !== 'ready' && status === 'ready' && !readyToastEmittedRef.current.has(`dashboard:${progressId}`)) {
+        readyToastEmittedRef.current.add(`dashboard:${progressId}`);
+        toast({
+          title: 'Listening task ready',
+          description: `${task.title} is ready. Start now when you’re ready.`,
+        });
+      }
+    }
+    dashboardCardReadinessRef.current = nextStatuses;
+  }, [flattenedListeningTasks, toast]);
 
   // Handle task click
   const ensureTaskProgress = async (task: ListeningTask): Promise<string | null> => {
@@ -396,12 +566,6 @@ function ListeningWeeklyPlan({ weekNumber, className }: ListeningWeeklyPlanProps
 
       await refetchProgress();
 
-      if (userId) {
-        const seeded = seedSessionStart(progressId, userId, todayYmd);
-        if (seeded) {
-        }
-      }
-
       const postToken = await getToken();
 
       return progressId;
@@ -417,157 +581,187 @@ function ListeningWeeklyPlan({ weekNumber, className }: ListeningWeeklyPlanProps
     }
   };
 
-  const waitForStartupGateReady = useCallback(
-    async (params: { progressId: string; taskTitle: string; targetPath: string }) => {
-      startupGateCancelledRef.current = false;
-      let lastPhase: StartupWarmupPhase = 'queued';
-      let lastTaskSummary: StartupGateState['taskSummary'] = null;
-      let lastSessionInfo: StartupGateState['sessionInfo'] = null;
-      let lastEta: number | null = null;
+  const mergeWarmupStatus = useCallback((next: StartupGateState) => {
+    setWarmupStatuses((prev) => ({
+      ...prev,
+      [next.progressId]: {
+        progressId: next.progressId,
+        targetPath: next.targetPath,
+        taskTitle: next.taskTitle,
+        phase: next.phase,
+        etaSecs: next.etaSecs,
+        taskSummary: next.taskSummary,
+        sessionInfo: next.sessionInfo,
+        waiting: next.waiting,
+        attempt: next.attempt,
+        ready: next.ready,
+        lastUpdatedAt: next.lastUpdatedAt,
+      },
+    }));
+  }, []);
 
-      for (let attempt = 0; attempt < STARTUP_GATE_MAX_ATTEMPTS; attempt += 1) {
-        if (startupGateCancelledRef.current) {
-          return { ready: false, cancelled: true };
-        }
-
-        try {
-          const data = await getFreshWithAuth<any>(
-            `/api/firebase/task-content/${encodeURIComponent(params.progressId)}`,
-            getToken,
-          );
-          const ready = Boolean(data?.ready);
-          const phase = normalizeStartupPhase(data?.phase);
-          const etaSecs = typeof data?.etaSecs === 'number' ? data.etaSecs : null;
-          const taskSummary = data?.taskSummary ?? null;
-          const sessionInfo = data?.session ?? null;
-
-          lastPhase = phase;
-          lastTaskSummary = taskSummary;
-          lastSessionInfo = sessionInfo;
-          lastEta = etaSecs;
-
-          setStartupGateState({
-            progressId: params.progressId,
-            targetPath: params.targetPath,
-            taskTitle: params.taskTitle,
-            phase,
-            etaSecs,
-            taskSummary,
-            sessionInfo,
-            waiting: !ready,
-            attempt: attempt + 1,
-          });
-
-          if (ready) {
-            return { ready: true, cancelled: false };
-          }
-        } catch (error: any) {
-          const message = error?.message || 'Unable to fetch startup readiness.';
-          lastPhase = 'error';
-          lastSessionInfo = {
-            status: 'error',
-            retryCount: attempt,
-            message,
-            errorCode: null,
-          };
-          setStartupGateState({
-            progressId: params.progressId,
-            targetPath: params.targetPath,
-            taskTitle: params.taskTitle,
-            phase: 'error',
-            etaSecs: null,
-            taskSummary: lastTaskSummary,
-            sessionInfo: lastSessionInfo,
-            waiting: true,
-            attempt: attempt + 1,
-          });
-        }
-
-        const delay = Math.min(
-          STARTUP_GATE_POLL_BASE_MS * Math.max(1, 2 ** attempt),
-          STARTUP_GATE_POLL_MAX_MS,
+  const fetchStartupGateStatus = useCallback(
+    async (params: {
+      progressId: string;
+      taskTitle: string;
+      targetPath: string;
+      attempt: number;
+      prevTaskSummary?: StartupGateState['taskSummary'];
+    }): Promise<StartupGateState> => {
+      const nowIso = new Date().toISOString();
+      try {
+        const data = await getFreshWithAuth<any>(
+          `/api/firebase/task-content/${encodeURIComponent(params.progressId)}`,
+          getToken,
         );
-        await new Promise((resolve) => {
-          window.setTimeout(resolve, delay);
-        });
+        const ready = Boolean(data?.ready);
+        const normalizedPhase = ready ? 'ready' : normalizeListeningWarmupPhase(data?.phase);
+        const next: StartupGateState = {
+          progressId: params.progressId,
+          targetPath: params.targetPath,
+          taskTitle: params.taskTitle,
+          phase: normalizedPhase,
+          etaSecs: typeof data?.etaSecs === 'number' ? data.etaSecs : null,
+          taskSummary: data?.taskSummary ?? params.prevTaskSummary ?? null,
+          sessionInfo: data?.session ?? null,
+          waiting: !ready,
+          attempt: params.attempt,
+          ready,
+          lastUpdatedAt: nowIso,
+          panelVisible: true,
+          backgroundPolling: !ready,
+          pollErrorCount: 0,
+        };
+        return next;
+      } catch (error: any) {
+        return {
+          progressId: params.progressId,
+          targetPath: params.targetPath,
+          taskTitle: params.taskTitle,
+          phase: 'error',
+          etaSecs: null,
+          taskSummary: params.prevTaskSummary ?? null,
+          sessionInfo: {
+            status: 'error',
+            retryCount: Math.max(0, params.attempt - 1),
+            message: error?.message || 'Unable to fetch startup readiness.',
+            errorCode: null,
+          },
+          waiting: true,
+          attempt: params.attempt,
+          ready: false,
+          lastUpdatedAt: nowIso,
+          panelVisible: true,
+          backgroundPolling: true,
+          pollErrorCount: 1,
+        };
       }
-
-      if (startupGateCancelledRef.current) {
-        return { ready: false, cancelled: true };
-      }
-
-      setStartupGateState({
-        progressId: params.progressId,
-        targetPath: params.targetPath,
-        taskTitle: params.taskTitle,
-        phase: lastPhase === 'idle' ? 'queued' : lastPhase,
-        etaSecs: lastEta,
-        taskSummary: lastTaskSummary,
-        sessionInfo: lastSessionInfo ?? {
-          status: 'error',
-          retryCount: STARTUP_GATE_MAX_ATTEMPTS,
-          message: 'Part 1 is still warming up. Please retry in a moment.',
-          errorCode: null,
-        },
-        waiting: false,
-        attempt: STARTUP_GATE_MAX_ATTEMPTS,
-      });
-
-      return { ready: false, cancelled: false };
     },
     [getToken],
   );
 
-  const enterPracticeWhenReady = useCallback(
-    async (params: { progressId: string; taskTitle: string; targetPath: string }) => {
-      setStartupGateState({
-        progressId: params.progressId,
-        targetPath: params.targetPath,
-        taskTitle: params.taskTitle,
-        phase: 'queued',
-        etaSecs: null,
-        taskSummary: null,
-        sessionInfo: null,
-        waiting: true,
-        attempt: 0,
-      });
-
-      const readinessResult = await waitForStartupGateReady(params);
-      if (!readinessResult.ready) {
-        if (!readinessResult.cancelled) {
-          toast({
-            title: 'Session warmup in progress',
-            description: 'Part 1 is still preparing. Use retry to continue once ready.',
-          });
-        }
-        return false;
-      }
-
-      setStartupGateState(null);
-      setLocation(params.targetPath);
-      return true;
-    },
-    [setLocation, toast, waitForStartupGateReady],
-  );
+  const openStartupGatePanel = useCallback((state: StartupGateState) => {
+    setStartupGateState((prev) => ({
+      ...state,
+      panelVisible: true,
+      backgroundPolling: state.ready ? false : true,
+      pollErrorCount: state.phase === 'error' ? Math.max(1, prev?.pollErrorCount ?? 0) : 0,
+    }));
+    mergeWarmupStatus(state);
+  }, [mergeWarmupStatus]);
 
   const handleStartupGateCancel = useCallback(() => {
-    startupGateCancelledRef.current = true;
-    setStartupGateState(null);
-  }, []);
+    setStartupGateState((prev) => (prev ? { ...prev, panelVisible: false, backgroundPolling: !prev.ready } : prev));
+    toast({
+      title: 'Preparation continues in background',
+      description: "You can leave and come back later. No session time is used while the task is preparing.",
+    });
+  }, [toast]);
 
   const handleStartupGateRetry = useCallback(async () => {
     if (!startupGateState) return;
-    startupGateCancelledRef.current = false;
-    await enterPracticeWhenReady({
+    const nextAttempt = Math.min(startupGateState.attempt + 1, STARTUP_GATE_MAX_ATTEMPTS + 20);
+    const refreshed = await fetchStartupGateStatus({
       progressId: startupGateState.progressId,
       taskTitle: startupGateState.taskTitle,
       targetPath: startupGateState.targetPath,
+      attempt: nextAttempt,
+      prevTaskSummary: startupGateState.taskSummary,
     });
-  }, [enterPracticeWhenReady, startupGateState]);
+    const nextState: StartupGateState = {
+      ...refreshed,
+      panelVisible: true,
+      backgroundPolling: !refreshed.ready,
+      pollErrorCount: refreshed.phase === 'error' ? (startupGateState.pollErrorCount + 1) : 0,
+    };
+    setStartupGateState(nextState);
+    mergeWarmupStatus(nextState);
+  }, [fetchStartupGateStatus, mergeWarmupStatus, startupGateState]);
+
+  const handleStartupGateStartNow = useCallback(() => {
+    if (!startupGateState?.ready) return;
+    const targetPath = startupGateState.targetPath;
+    setStartupGateState((prev) => (prev ? { ...prev, panelVisible: false, backgroundPolling: false } : prev));
+    setLocation(targetPath);
+  }, [setLocation, startupGateState]);
+
+  useEffect(() => {
+    if (!startupGateState || !startupGateState.backgroundPolling || startupGateState.ready) {
+      return;
+    }
+
+    const delay = Math.min(
+      STARTUP_GATE_POLL_BASE_MS * Math.max(1, 2 ** Math.min(startupGateState.pollErrorCount, 4)),
+      STARTUP_GATE_POLL_MAX_MS,
+    );
+
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const refreshed = await fetchStartupGateStatus({
+          progressId: startupGateState.progressId,
+          taskTitle: startupGateState.taskTitle,
+          targetPath: startupGateState.targetPath,
+          attempt: startupGateState.attempt + 1,
+          prevTaskSummary: startupGateState.taskSummary,
+        });
+        const nextState: StartupGateState = {
+          ...refreshed,
+          panelVisible: startupGateState.panelVisible,
+          backgroundPolling: !refreshed.ready,
+          pollErrorCount:
+            refreshed.phase === 'error'
+              ? Math.min(8, startupGateState.pollErrorCount + 1)
+              : 0,
+        };
+        setStartupGateState((prev) => {
+          if (!prev || prev.progressId !== startupGateState.progressId) {
+            return prev;
+          }
+          return nextState;
+        });
+        mergeWarmupStatus(nextState);
+
+        if (refreshed.ready) {
+          void refetchProgress();
+          if (!startupGateState.panelVisible && !readyToastEmittedRef.current.has(refreshed.progressId)) {
+            readyToastEmittedRef.current.add(refreshed.progressId);
+            toast({
+              title: 'Listening task ready',
+              description: `${refreshed.taskTitle} is ready to start.`,
+            });
+          }
+        }
+      })();
+    }, delay);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [fetchStartupGateStatus, mergeWarmupStatus, refetchProgress, startupGateState, toast]);
 
   const handleTaskClick = async (task: ListeningTask) => {
     if (startingTaskKey && startingTaskKey === task.localKey) return;
-    if (startupGateState) return;
+    if (startupGateState?.panelVisible) return;
     if (authLoading || !authReady) return;
 
     if (!canUseStorage) {
@@ -579,18 +773,7 @@ function ListeningWeeklyPlan({ weekNumber, className }: ListeningWeeklyPlanProps
       return;
     }
 
-    // If server user id hasn’t landed yet, try a single forced refresh to warm token + user cache.
-    let effectiveUserId = user?.id ?? currentUser?.uid ?? null;
-    if (!effectiveUserId) {
-      try {
-        const t = await getToken(true);
-      } catch (e) {
-      }
-      // Re-read after refresh
-      effectiveUserId = user?.id ?? currentUser?.uid ?? null;
-    }
-
-    // Start (even if userId still null) — withAuthRetry already handles auth; we’ll seed key later if needed.
+    // Start (even if userId still null) — withAuthRetry already handles auth.
     const existingId = task.progressId ?? localProgressOverrides[task.localKey] ?? null;
     const progressId = existingId ?? (await ensureTaskProgress(task));
 
@@ -607,30 +790,48 @@ function ListeningWeeklyPlan({ weekNumber, className }: ListeningWeeklyPlanProps
       getToken,
     ).catch(() => undefined);
 
-    // Seed countdown if we have an identity; otherwise practice page will soft-fallback seed on first mount.
-    if (effectiveUserId) {
-      const sessionKey = SESSION_START_KEY(effectiveUserId, todayYmd, progressId);
-      const hasSessionKey = Boolean(readSessionStart(sessionKey));
-      if (!hasSessionKey) {
-        const seeded = seedSessionStart(progressId, effectiveUserId, todayYmd);
-        if (!seeded) {
-          toast({
-            title: "Unable to start session",
-            description: "Please try again from the dashboard.",
-            variant: "destructive",
-          });
-          return;
-        }
-      }
-    }
-
     await getToken();
 
     const targetPath = `/practice/${encodeURIComponent(progressId)}?progressId=${encodeURIComponent(progressId)}&taskId=${encodeURIComponent(task.id)}`;
-    await enterPracticeWhenReady({
+    const tracked = warmupStatuses[progressId];
+    if (tracked?.ready) {
+      setLocation(targetPath);
+      return;
+    }
+
+    if (tracked && !tracked.ready) {
+      setStartupGateState({
+        ...tracked,
+        targetPath,
+        panelVisible: true,
+        backgroundPolling: true,
+        pollErrorCount: tracked.phase === 'error' ? 1 : 0,
+      });
+      return;
+    }
+
+    const initial = await fetchStartupGateStatus({
       progressId,
       taskTitle: task.title,
       targetPath,
+      attempt: 1,
+      prevTaskSummary: null,
+    });
+    if (initial.ready) {
+      mergeWarmupStatus(initial);
+      setLocation(targetPath);
+      return;
+    }
+
+    openStartupGatePanel({
+      ...initial,
+      panelVisible: true,
+      backgroundPolling: true,
+      pollErrorCount: initial.phase === 'error' ? 1 : 0,
+    });
+    toast({
+      title: 'Preparing Part 1',
+      description: "We'll keep preparing in the background. You can leave and return without losing time.",
     });
   };
 
@@ -731,43 +932,57 @@ function ListeningWeeklyPlan({ weekNumber, className }: ListeningWeeklyPlanProps
 
       {/* Day Sections */}
       <CardContent className="p-5 md:p-6">
-        {startupGateState && (
+        {startupGateState?.panelVisible && (
           <div className="mb-5 rounded-lg border border-blue-200 bg-blue-50 p-4">
             <p className="text-sm font-semibold text-blue-900">
-              Preparing Part 1 before opening practice
+              {startupGateState.ready ? 'Part 1 is ready' : 'Preparing Part 1 before opening practice'}
             </p>
             <p className="mt-1 text-sm text-blue-800">
               {startupGateState.taskTitle}
             </p>
             <SessionWarmup
               phase={startupGateState.phase}
+              ready={startupGateState.ready}
               etaSecs={startupGateState.etaSecs}
               taskSummary={startupGateState.taskSummary}
               sessionInfo={startupGateState.sessionInfo}
+              attemptCount={startupGateState.attempt}
+              lastUpdatedAt={startupGateState.lastUpdatedAt}
+              backgroundPolling={startupGateState.backgroundPolling}
               skillType="listening"
               onRefresh={() => {
-                if (startupGateState.waiting) return;
                 void handleStartupGateRetry();
               }}
             />
+            <div className="mt-3 rounded-md border border-blue-200 bg-white/70 p-3">
+              <p className="text-xs text-blue-900 font-medium">
+                {startupGateState.ready
+                  ? 'You can start now. The session timer will begin only after the session actually starts.'
+                  : "We'll keep preparing in the background. You can leave this panel and come back later."}
+              </p>
+              <p className="mt-1 text-xs text-blue-700">
+                Latest attempt {startupGateState.attempt}
+                {startupGateState.lastUpdatedAt ? ` • Updated ${new Date(startupGateState.lastUpdatedAt).toLocaleTimeString()}` : ''}
+              </p>
+            </div>
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              <Button
-                type="button"
-                onClick={() => void handleStartupGateRetry()}
-                disabled={startupGateState.waiting}
-              >
-                Retry now
+              {startupGateState.ready ? (
+                <Button type="button" onClick={handleStartupGateStartNow}>
+                  Start session now
+                </Button>
+              ) : (
+                <Button type="button" variant="outline" onClick={() => void handleStartupGateRetry()}>
+                  Check again now
+                </Button>
+              )}
+              <Button type="button" variant="outline" onClick={handleStartupGateCancel}>
+                {startupGateState.ready ? 'Hide panel' : 'Leave and come back later'}
               </Button>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={handleStartupGateCancel}
-              >
-                Cancel
-              </Button>
-              <span className="text-xs text-blue-700">
-                Poll attempt {startupGateState.attempt} of {STARTUP_GATE_MAX_ATTEMPTS}
-              </span>
+              {!startupGateState.ready && (
+                <span className="text-xs text-blue-700">
+                  Background polling active (max delay {Math.round(STARTUP_GATE_POLL_MAX_MS / 1000)}s)
+                </span>
+              )}
             </div>
           </div>
         )}
@@ -780,7 +995,7 @@ function ListeningWeeklyPlan({ weekNumber, className }: ListeningWeeklyPlanProps
               tasks={day.tasks}
               isAvailable={day.isAvailable}
               onTaskClick={handleTaskClick}
-              ctaDisabled={authLoading || !authReady || Boolean(startupGateState)}
+              ctaDisabled={authLoading || !authReady || Boolean(startupGateState?.panelVisible)}
             />
           ))}
         </div>

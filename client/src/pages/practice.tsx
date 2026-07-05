@@ -25,10 +25,12 @@ import { DEFAULT_SESSION_MINUTES, NEXT_MIN_MS, SESSION_START_KEY, msToMMSS } fro
 import type { ListeningRendererRoot } from '@shared/listening';
 import { SessionWarmup } from '@/components/SessionWarmup';
 import { useCountdownTimer } from '@/hooks/useCountdown';
-import { findSessionStartKey } from '@/lib/sessionKey';
+import { findSessionStartKey, markSessionStarted } from '@/lib/sessionKey';
 
 // Debug toggle
 const DEBUG = Boolean((window as any).__DEBUG__);
+
+type RuntimeCountdownState = 'warming_up' | 'ready_not_started' | 'started' | 'paused';
 
 // Types for attempt submission
 type AttemptAnswerPayload = {
@@ -1001,6 +1003,7 @@ const StartupEntryFallback = ({
   etaSecs,
   taskSummary,
   sessionInfo,
+  lastUpdatedAt,
   onRefresh,
 }: {
   phase: 'idle' | 'queued' | 'warming' | 'running' | 'error';
@@ -1018,28 +1021,35 @@ const StartupEntryFallback = ({
     message: string;
     errorCode?: string | null;
   } | null;
+  lastUpdatedAt?: string | null;
   onRefresh: () => void;
 }) => (
   <div className="container mx-auto px-4 py-8 sm:py-12">
     <div className="max-w-2xl mx-auto border rounded-lg p-5 sm:p-6 bg-white shadow-sm">
       <h2 className="text-xl font-semibold mb-2">Preparing listening session</h2>
       <p className="text-gray-600 mb-4">
-        Part 1 is still warming up. You will enter the session once it is ready.
+        Part 1 is still preparing. This pre-entry fallback appears only when readiness changes after navigation.
       </p>
       <SessionWarmup
         phase={phase}
         etaSecs={etaSecs}
         taskSummary={taskSummary}
         sessionInfo={sessionInfo}
+        attemptCount={sessionInfo?.retryCount}
+        lastUpdatedAt={lastUpdatedAt}
+        backgroundPolling
         skillType="listening"
         onRefresh={onRefresh}
       />
+      <p className="text-xs text-gray-500 mt-2">
+        You can return to dashboard and come back later. Preparation continues without consuming session time.
+      </p>
       <div className="mt-4 flex flex-col sm:flex-row gap-3">
         <button
           className="px-4 py-2 rounded bg-gray-900 text-white min-h-[44px] w-full sm:w-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
           onClick={onRefresh}
         >
-          Retry now
+          Check now
         </button>
         <WouterLink
           className="px-4 py-2 rounded border min-h-[44px] w-full sm:w-auto inline-flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
@@ -1164,6 +1174,13 @@ export default function Practice() {
   const taskSummary = contentData?.taskSummary ?? null;
   const sessionInfo = contentData?.session ?? null;
   const startupPollAttemptRef = useRef(0);
+  const [startupFallbackLastUpdatedAt, setStartupFallbackLastUpdatedAt] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!taskId) return;
+    if (!(phase === 'queued' || phase === 'warming' || phase === 'running' || phase === 'error')) return;
+    setStartupFallbackLastUpdatedAt(new Date().toISOString());
+  }, [taskId, phase, etaSecs, sessionInfo?.retryCount, sessionInfo?.message]);
 
   useEffect(() => {
     if (!taskId) {
@@ -1595,7 +1612,7 @@ const clearRuntimeDraft = useCallback(() => {
   }, [getToken, nextStatusErrorCount, sessionComplete, taskId, timeUp]);
 
   // Session timer logic
-  const sessionIdentity = user?.id ?? activeProgress?.userId ?? currentUser?.uid ?? null;
+const sessionIdentity = user?.id ?? activeProgress?.userId ?? currentUser?.uid ?? null;
 const ymd = useMemo(() => new Date().toISOString().split('T')[0], []);
 const sessionStartKey = useMemo(() => {
   if (!sessionIdentity || !progressId) {
@@ -1623,6 +1640,39 @@ useEffect(() => {
   }
 }, [user?.id, currentUser?.uid, progressId, totalMs]);
 
+  // Countdown begins only when the learner meaningfully starts the session (first playable audio play).
+  const markSessionStartedAtPlayableMoment = useCallback(() => {
+    if (hasSessionStarted || timeUp) {
+      return;
+    }
+    const identity = user?.id ?? activeProgress?.userId ?? currentUser?.uid ?? null;
+    if (!identity || !progressId) {
+      return;
+    }
+    const started = markSessionStarted(identity, progressId, { ymd });
+    if (!started) {
+      return;
+    }
+    startMsRef.current = started.startMs;
+    setSessionStartMs(started.startMs);
+    setHasSessionStarted(true);
+    const nextRemaining = Math.max(0, totalMs - (Date.now() - started.startMs));
+    setCountdownRemaining((prev) => (prev !== nextRemaining ? nextRemaining : prev));
+    if (nextRemaining <= 0) {
+      setTimeUp(true);
+      setTimerFrozen(true);
+    }
+  }, [
+    activeProgress?.userId,
+    currentUser?.uid,
+    hasSessionStarted,
+    progressId,
+    timeUp,
+    totalMs,
+    user?.id,
+    ymd,
+  ]);
+
   const handleCountdownChange = useCallback((next: number) => {
     setCountdownRemaining((prev) => (prev !== next ? next : prev));
   }, []);
@@ -1637,8 +1687,6 @@ const countdownPauseReason = timeUp
       : null;
 
   const startMsForCountdown = hasSessionStarted ? sessionStartMs : null;
-  useEffect(() => {
-  }, [progressId, sessionStartKey, sessionStartMs, hasSessionStarted, totalMs, countdownPauseReason, countdownRemaining]);
 
   useCountdownTimer({
     progressId: sessionStartKey ?? progressId ?? null,
@@ -1647,22 +1695,6 @@ const countdownPauseReason = timeUp
     paused: Boolean(countdownPauseReason),
     onChange: handleCountdownChange,
   });
-
-useEffect(() => {
-  if (typeof countdownRemaining !== "number") {
-    return;
-  }
-  const seconds = Math.floor(countdownRemaining / 1000);
-  if (
-    countdownTickLogRef.current === null ||
-    Math.abs((countdownTickLogRef.current ?? seconds) - seconds) >= 5
-  ) {
-    countdownTickLogRef.current = seconds;
-  }
-}, [countdownRemaining]);
-
-useEffect(() => {
-}, [progressId, taskId]);
 
 useEffect(() => {
   if (!sessionStartKey) {
@@ -1968,6 +2000,7 @@ useEffect(() => {
     };
     
     const onPlay = () => {
+      markSessionStartedAtPlayableMoment();
       setIsPlaying(true);
       if ((el.currentTime ?? 0) < 1) {
         playStartCountRef.current += 1;
@@ -1999,7 +2032,7 @@ useEffect(() => {
       el.removeEventListener('ended', onEnded);
       el.removeEventListener('error', onError);
     };
-  }, []);
+  }, [markSessionStartedAtPlayableMoment]);
 
   // Audio source management
   useEffect(() => {
@@ -2685,6 +2718,7 @@ useEffect(() => {
         etaSecs={etaSecs}
         taskSummary={taskSummary}
         sessionInfo={sessionInfo}
+        lastUpdatedAt={startupFallbackLastUpdatedAt}
         onRefresh={() => {
           startupPollAttemptRef.current = 0;
           void queryClient.invalidateQueries({ queryKey: [`/api/firebase/task-content/${taskId}`] });
@@ -3040,9 +3074,22 @@ const legacyQuestionsBlock = timeUp ? (
   // Timer display component
   const timerStatusLabel = timeUp
     ? "Session complete"
-    : shouldPauseForFeedback || timerFrozen
-      ? "(paused)"
-      : undefined;
+    : (() => {
+        const runtimeCountdownState: RuntimeCountdownState =
+          hasSessionStarted
+            ? (shouldPauseForFeedback || timerFrozen ? 'paused' : 'started')
+            : (ready ? 'ready_not_started' : 'warming_up');
+        if (runtimeCountdownState === 'warming_up') {
+          return "Preparing";
+        }
+        if (runtimeCountdownState === 'ready_not_started') {
+          return "Ready to start";
+        }
+        if (runtimeCountdownState === 'paused') {
+          return "(paused)";
+        }
+        return undefined;
+      })();
   const timerDisplay = (
     <div className="flex items-center gap-2 text-sm flex-wrap justify-end">
       <Clock className="h-4 w-4 text-gray-500" />

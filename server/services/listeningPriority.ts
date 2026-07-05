@@ -1,5 +1,6 @@
 export type ListeningPriorityClass = "P1_CURRENT" | "P2_NEXT_24H" | "P3_LATER";
 export type ListeningPrefetchSource =
+  | "dashboard_open"
   | "dashboard_start_click"
   | "session_open"
   | "transition_wait"
@@ -10,6 +11,7 @@ export type ListeningPrefetchSource =
 
 export const normalizeListeningPrefetchSource = (value: unknown): ListeningPrefetchSource => {
   const raw = String(value ?? "").trim().toLowerCase();
+  if (raw === "dashboard_open") return "dashboard_open";
   if (raw === "dashboard_start_click") return "dashboard_start_click";
   if (raw === "session_open") return "session_open";
   if (raw === "transition_wait") return "transition_wait";
@@ -20,6 +22,12 @@ export const normalizeListeningPrefetchSource = (value: unknown): ListeningPrefe
 };
 
 export const deriveListeningPrioritySignalsFromSource = (source: ListeningPrefetchSource) => {
+  if (source === "dashboard_open") {
+    return {
+      dashboardOpenBoost: true,
+      startClickBoost: false,
+    };
+  }
   if (source === "dashboard_start_click") {
     return {
       dashboardOpenBoost: true,

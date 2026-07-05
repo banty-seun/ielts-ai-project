@@ -2,7 +2,6 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getQueryFn, queryClient } from "@/lib/queryClient";
 import { sharedTracker } from "@/lib/trackers";
-import { SESSION_START_KEY } from "@shared/constants";
 import { useFirebaseAuthContext } from "@/contexts/FirebaseAuthContext";
 import { patchFreshWithAuth, postFreshWithAuth } from "@/lib/apiClient";
 
@@ -600,34 +599,3 @@ export function useInitializeTaskProgress(weeklyPlanId: string, tasks: any[] = [
     isInitializing 
   };
 }
-
-export const seedSessionStart = (
-  progressId: string,
-  userId: string,
-  ymd: string,
-): { key: string; startMs: number } | null => {
-  if (typeof window === "undefined") {
-    return null;
-  }
-  if (!progressId || !userId || !ymd) {
-    return null;
-  }
-  const key = SESSION_START_KEY(userId, ymd, progressId);
-  const current = window.localStorage.getItem(key);
-  const parsed = Number(current);
-  if (Number.isFinite(parsed) && parsed > 0) {
-    return { key, startMs: parsed };
-  }
-  const now = Date.now();
-  window.localStorage.setItem(key, String(now));
-  return { key, startMs: now };
-};
-
-export const readSessionStart = (key: string): number | null => {
-  if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
-    return null;
-  }
-  const raw = window.localStorage.getItem(key);
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-};
